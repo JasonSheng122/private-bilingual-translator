@@ -2238,7 +2238,7 @@ test("content script pauses stored auto translate on native target-language page
 
   await loadContentApi(document, {
     autoPanel: true,
-    location: { href: "https://walkinglabs.github.io/learn-harness-engineering/zh-cn/lectures/lecture-01-why-capable-agents-still-fail/" },
+    location: { href: "https://docs.example.test/guide/zh-cn/lectures/lecture-01-why-capable-agents-still-fail/" },
     sendMessage(message, callback) {
       sentMessages.push(message);
 
@@ -2275,7 +2275,7 @@ test("floating auto translate pauses when spa switches to target-language conten
   let api;
 
   api = await loadContentApi(document, {
-    location: { href: "https://walkinglabs.github.io/learn-harness-engineering/" },
+    location: { href: "https://docs.example.test/guide/" },
     mutationObserver: true,
     immediateTimers: true,
     sendMessage(message, callback) {
@@ -2330,7 +2330,7 @@ test("floating target-language pause does not keep rewriting its own button", as
   let api;
 
   api = await loadContentApi(document, {
-    location: { href: "https://walkinglabs.github.io/learn-harness-engineering/" },
+    location: { href: "https://docs.example.test/guide/" },
     mutationObserver: true,
     immediateTimers: true,
     sendMessage(message, callback) {

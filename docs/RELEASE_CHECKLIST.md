@@ -104,28 +104,26 @@
 4. CHANGELOG.md 已记录用户可见的新功能、修复、限制或发布风险。
 5. 剩余风险已写明。
 
-## 开源发布前检查
+## 发布前检查
 
 1. `LICENSE` 存在，并且许可证选择已经由项目所有者确认。
 2. `.gitignore` 忽略 `.DS_Store`、依赖目录、构建产物、日志、压缩包和本地环境文件。
 3. `.DS_Store` 不再被 git 跟踪。
-4. README.md 是公开项目说明，不再只是 Codex Harness 使用说明。
+4. README.md 是面向用户和开发者的项目说明。
 5. PRIVACY.md 说明了文本收集、provider 请求、API Key 存储和敏感域名阻止边界。
 6. SECURITY.md 说明了漏洞报告方式和禁止提交真实 API Key、网页原文、译文或 provider 原始响应。
 7. CHANGELOG.md 存在，并说明当前版本和后续 bug fix / release notes 的公开展示方式。
-8. 公开文档不包含真实 API Key、token、余额信息、客户信息、私人测试站点或内部协作记录。
+8. 公开文档不包含真实 API Key、token、私人网页文本或个人数据。
 9. 不内置第三方中转站默认项；用户自定义 provider 由用户自己填写 `Base URL`、`model` 和 `API Key`。
 10. manifest 默认不预置第三方中转站 host permission。
 11. manifest 的 `optional_host_permissions` 只用于用户保存自定义 provider 时请求对应 HTTPS origin。
-12. 本地 agent Harness、任务卡、开发日志、模块审查和老师导读不进入公开仓库。
-13. 如果项目曾在私人仓库中包含敏感历史，公开发布必须使用干净快照、新仓库初始提交或 orphan branch，不直接公开旧 Git 历史。
-14. `npm test` 通过。
-15. `npm run audit` 通过。
-16. 开源仓库秘密扫描通过。
+12. `npm test` 通过。
+13. `npm run audit` 通过。
+14. 秘密扫描通过。
 
 ## Chrome Web Store 发布前检查
 
-1. 发布 zip 不包含 `node_modules`、本地 Harness、任务卡、开发日志、模块审查、私人测试截图或本地临时文件。
+1. 发布 zip 不包含 `node_modules`、日志、压缩包、本地环境文件、测试截图或本地临时文件。
 2. Chrome Web Store Developer Dashboard 中的 single purpose、权限说明、隐私披露和 store listing 与 README、PRIVACY.md、manifest.json 一致。
 3. 对 `activeTab`、`storage`、`scripting`、普通 http/https content script、provider host permissions 和自定义 provider optional host permission 给出最小权限解释。
 4. 如果发布新版本，先更新 `manifest.json` version、CHANGELOG.md 和 GitHub Release notes，再提交商店审核。

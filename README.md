@@ -4,7 +4,7 @@
 
 这个项目面向需要阅读英文网页的个人用户和开发者。它会在普通网页右侧显示一个轻量控制入口，支持把当前页面翻译成中文，也支持在原文下方插入中文译文。
 
-当前仓库是 developer preview。代码和文档已按开源发布整理，但正式公开前仍应使用干净快照或 orphan branch，避免把私人开发历史带入 GitHub。
+当前版本还在早期阶段，建议先以源码方式安装和使用。
 
 ## 功能
 
@@ -127,13 +127,6 @@ npm test
 npm run audit
 ```
 
-建议同时做公开发布扫描：
-
-```bash
-git ls-files
-git grep -n -i -E "api key|token|secret|password|legacy-provider-name|private-path"
-```
-
 更多人工审计命令见 [docs/AUDIT_COMMANDS.md](docs/AUDIT_COMMANDS.md)。
 
 ## 版本和变更记录
@@ -147,28 +140,11 @@ git grep -n -i -E "api key|token|secret|password|legacy-provider-name|private-pa
 
 每次修 bug 或发布新版本时，应同步更新 `manifest.json` 版本号、`CHANGELOG.md` 和 GitHub Release notes。
 
-## Chrome Web Store 状态
+## 发布状态
 
-这个项目具备 Manifest V3 扩展的基本形态，但当前仓库不是直接上架包。发布到 Chrome Web Store 前还需要完成：
+当前版本暂未发布到 Chrome Web Store。请先按上面的步骤从源码加载扩展。
 
-1. 使用干净快照或 orphan branch 准备公开源码。
-2. 准备不包含 `node_modules`、本地 Harness、任务卡、私人日志和本地临时文件的发布 zip。
-3. 在 Chrome Web Store Developer Dashboard 填写 single purpose、权限说明、隐私披露、测试说明和 store listing。
-4. 解释为什么需要普通网页 content script、`activeTab`、`storage`、`scripting`、provider host permissions 和自定义 provider 的 optional host permission。
-5. 确认 [PRIVACY.md](PRIVACY.md) 与 Chrome Web Store 隐私字段一致。
-6. 提交 Google 审核。
-
-## 开源发布前检查
-
-公开发布前至少确认：
-
-1. `npm test` 通过。
-2. `npm run audit` 通过。
-3. `git ls-files` 中没有本地 Harness、任务卡、开发日志或模块审查记录。
-4. 仓库没有真实 API Key、token、私人网页文本、客户信息或内部协作记录。
-5. 默认 manifest 不预置第三方中转站 host permission。
-6. README、PRIVACY、SECURITY、CHANGELOG 和 LICENSE 齐全。
-7. 如果旧 Git 历史包含敏感信息，必须使用干净快照、新仓库初始提交或 orphan branch 发布。
+后续如果发布商店版本，本仓库会继续保留源码、变更记录和安全说明。
 
 ## 已知限制
 

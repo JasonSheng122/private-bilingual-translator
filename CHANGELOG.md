@@ -8,8 +8,12 @@
 
 ### Added
 
-- 补齐公开 README，说明安装、首次使用、provider 配置、权限边界、Chrome Web Store 状态和开源发布检查。
+- 补齐公开 README，说明安装、首次使用、provider 配置、权限边界、发布状态和已知限制。
 - 新增 `CHANGELOG.md`，作为公开用户查看后续 bug fix 和版本变化的入口。
+
+### Changed
+
+- 清理公开 README 和文档中的内部发布流程措辞，让仓库首页只保留用户和开发者需要的信息。
 
 ## 0.1.0 - 2026-05-17
 
