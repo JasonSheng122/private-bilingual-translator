@@ -1,0 +1,60 @@
+export const MESSAGE_TYPES = Object.freeze({
+  GET_PAGE_STATUS: "PBT_GET_PAGE_STATUS",
+  TRANSLATE_PAGE: "PBT_TRANSLATE_PAGE",
+  RESTORE_PAGE: "PBT_RESTORE_PAGE",
+  REMOVE_TRANSLATIONS: "PBT_REMOVE_TRANSLATIONS",
+  COLLECT_SEGMENTS: "PBT_COLLECT_SEGMENTS",
+  PING_CONTENT_SCRIPT: "PBT_PING_CONTENT_SCRIPT",
+  RENDER_TRANSLATIONS: "PBT_RENDER_TRANSLATIONS",
+  PREPARE_TRANSLATION: "PBT_PREPARE_TRANSLATION",
+  SHOW_FLOATING_TRANSLATE_BUTTON: "PBT_SHOW_FLOATING_TRANSLATE_BUTTON",
+  SET_SITE_DISPLAY_MODE: "PBT_SET_SITE_DISPLAY_MODE",
+  SET_SITE_TRANSLATION_SETTINGS: "PBT_SET_SITE_TRANSLATION_SETTINGS",
+  GET_CUSTOM_PROVIDER_CONFIG: "PBT_GET_CUSTOM_PROVIDER_CONFIG",
+  SAVE_CUSTOM_PROVIDER_CONFIG: "PBT_SAVE_CUSTOM_PROVIDER_CONFIG",
+  GET_API_KEY_STATUS: "PBT_GET_API_KEY_STATUS",
+  SAVE_API_KEY: "PBT_SAVE_API_KEY",
+  CLEAR_API_KEY: "PBT_CLEAR_API_KEY",
+  OPEN_EXTENSION_POPUP: "PBT_OPEN_EXTENSION_POPUP"
+});
+
+export const API_KEY_STORAGE_MODES = Object.freeze({
+  ONCE: "once",
+  SESSION: "session",
+  LOCAL: "local"
+});
+
+export const QUALITY_MODES = Object.freeze({
+  FREE: "free",
+  NATURAL: "natural",
+  DEEP: "deep"
+});
+
+export const DISPLAY_MODES = Object.freeze({
+  BILINGUAL: "bilingual",
+  REPLACE: "replace"
+});
+
+export const PAID_PROVIDERS = Object.freeze({
+  GEMINI: "gemini",
+  CUSTOM_OPENAI: "custom_openai",
+  CUSTOM_GEMINI: "custom_gemini"
+});
+
+export function normalizeQualityMode(value) {
+  return Object.values(QUALITY_MODES).includes(value) ? value : QUALITY_MODES.FREE;
+}
+
+export function normalizeDisplayMode(value) {
+  return Object.values(DISPLAY_MODES).includes(value) ? value : DISPLAY_MODES.BILINGUAL;
+}
+
+export function normalizeApiKeyStorageMode(value) {
+  return Object.values(API_KEY_STORAGE_MODES).includes(value) ? value : API_KEY_STORAGE_MODES.SESSION;
+}
+
+export function normalizePaidProvider(value) {
+  return value === PAID_PROVIDERS.CUSTOM_OPENAI || value === PAID_PROVIDERS.CUSTOM_GEMINI
+    ? value
+    : PAID_PROVIDERS.GEMINI;
+}

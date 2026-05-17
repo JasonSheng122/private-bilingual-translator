@@ -1,0 +1,27 @@
+.DS_Store
+node_modules/
+coverage/
+dist/
+build/
+*.log
+*.zip
+*.crx
+.env
+.env.*
+!.env.example
+
+# Local agent harness and private development history.
+AGENTS.md
+HARNESS.md
+TASK_PROTOCOL.md
+CURRENT_STATE.md
+REQUIREMENTS.md
+ACCEPTANCE_MATRIX.md
+HARNESS_LEARNINGS.md
+HARNESS_EVALUATION.md
+DEVLOG.md
+MODULE_REVIEW.md
+PROMPT_01_READ_HARNESS.txt
+docs/TEACHER_GUIDE.md
+docs/DECISIONS.md
+tasks/

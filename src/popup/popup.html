@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Private Bilingual Translator</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main class="popup">
+      <label class="field">
+        <span>翻译质量</span>
+        <select id="qualityMode">
+          <option value="free">免费版</option>
+          <option value="natural">自然版</option>
+          <option value="deep">深度版</option>
+        </select>
+      </label>
+
+      <label class="field">
+        <span>显示方式</span>
+        <select id="displayMode">
+          <option value="bilingual">双语翻译</option>
+          <option value="replace">直接翻译</option>
+        </select>
+      </label>
+
+      <section id="keyPanel" class="key-panel" aria-label="API Key" hidden>
+        <label class="field">
+          <span>付费供应商</span>
+          <select id="paidProvider">
+            <option value="gemini" selected>Gemini API</option>
+            <option value="custom_openai">自定义中转站</option>
+          </select>
+        </label>
+
+        <p class="provider-note" id="providerNote">https://generativelanguage.googleapis.com · gemini-2.5-flash-lite</p>
+
+        <section id="customProviderConfig" class="custom-provider-config" aria-label="Custom provider config" hidden>
+          <label class="field">
+            <span>Base URL</span>
+            <input id="customBaseUrlInput" type="url" autocomplete="off" placeholder="https://api.example.com">
+          </label>
+
+          <label class="field">
+            <span>model</span>
+            <input id="customModelInput" type="text" autocomplete="off" placeholder="gemini-2.5-flash-lite">
+          </label>
+
+          <button id="saveCustomProviderConfigButton" type="button">保存中转站配置</button>
+        </section>
+
+        <p class="key-status" id="apiKeyStatus" data-state="unknown">正在检查 Key 状态...</p>
+
+        <label class="field">
+          <span>API Key</span>
+          <input id="apiKeyInput" type="password" autocomplete="off" placeholder="自然版 / 深度版需要">
+        </label>
+
+        <label class="field">
+          <span>Key 保存方式</span>
+          <select id="apiKeyStorageMode">
+            <option value="once">单次使用</option>
+            <option value="session" selected>本次会话</option>
+            <option value="local">本地保存</option>
+          </select>
+        </label>
+
+        <div class="secondary-actions">
+          <button id="saveKeyButton" type="button">保存 Key</button>
+          <button id="clearSessionKeyButton" type="button">清除会话</button>
+        </div>
+
+        <button id="clearLocalKeyButton" type="button">清除本地 Key</button>
+      </section>
+
+      <button id="translateButton" type="button">翻译</button>
+
+      <div class="secondary-actions">
+        <button id="restoreButton" type="button">恢复原文</button>
+        <button id="removeButton" type="button">移除译文</button>
+      </div>
+
+      <p id="status" class="status" role="status"></p>
+    </main>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

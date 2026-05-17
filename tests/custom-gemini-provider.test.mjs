@@ -1,0 +1,1025 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  CUSTOM_GEMINI_PROVIDER,
+  getCustomGeminiProviderMetadata,
+  isAllowedCustomGeminiUrl,
+  parseCustomGeminiResponse,
+  translateWithCustomGeminiProvider
+} from "../src/providers/custom-gemini-provider.mjs";
+import { buildCustomGeminiEndpoint } from "../src/shared/custom-provider-config.mjs";
+
+const CUSTOM_PROVIDER_CONFIG = Object.freeze({
+  baseUrl: "https://custom.example",
+  model: "gemini-2.5-flash-lite"
+});
+const CUSTOM_PROVIDER_ENDPOINT = buildCustomGeminiEndpoint(CUSTOM_PROVIDER_CONFIG);
+
+test("custom gemini provider declares config-derived metadata and key requirement", () => {
+  const metadata = getCustomGeminiProviderMetadata(CUSTOM_PROVIDER_CONFIG);
+
+  assert.equal(CUSTOM_GEMINI_PROVIDER.id, "custom_gemini");
+  assert.equal(CUSTOM_GEMINI_PROVIDER.endpoint, "");
+  assert.deepEqual(CUSTOM_GEMINI_PROVIDER.allowedEndpoints, []);
+  assert.deepEqual(CUSTOM_GEMINI_PROVIDER.allowedOrigins, []);
+  assert.equal(metadata.endpoint, CUSTOM_PROVIDER_ENDPOINT);
+  assert.deepEqual(metadata.allowedEndpoints, [CUSTOM_PROVIDER_ENDPOINT]);
+  assert.deepEqual(metadata.allowedOrigins, ["https://custom.example"]);
+  assert.equal(metadata.model, "gemini-2.5-flash-lite");
+  assert.equal(CUSTOM_GEMINI_PROVIDER.maxConcurrentRequests, 6);
+  assert.equal(CUSTOM_GEMINI_PROVIDER.requiresKey, true);
+});
+
+test("custom gemini provider validates endpoint whitelist", () => {
+  assert.equal(isAllowedCustomGeminiUrl(CUSTOM_PROVIDER_ENDPOINT, CUSTOM_PROVIDER_CONFIG), true);
+  assert.equal(isAllowedCustomGeminiUrl(`${CUSTOM_PROVIDER_ENDPOINT}?key=abc`, CUSTOM_PROVIDER_CONFIG), false);
+  assert.equal(isAllowedCustomGeminiUrl(`${CUSTOM_PROVIDER_ENDPOINT}?api_key=abc`, CUSTOM_PROVIDER_CONFIG), false);
+  assert.equal(isAllowedCustomGeminiUrl("http://custom.example/v1beta/models/gemini-2.5-flash-lite:generateContent", CUSTOM_PROVIDER_CONFIG), false);
+  assert.equal(isAllowedCustomGeminiUrl("https://example.com/v1beta/models/gemini-2.5-flash-lite:generateContent", CUSTOM_PROVIDER_CONFIG), false);
+  assert.equal(isAllowedCustomGeminiUrl("https://custom.example/v1/chat/completions", CUSTOM_PROVIDER_CONFIG), false);
+});
+
+test("custom gemini provider requires config before fetch", async () => {
+  let fetchCalled = false;
+  const result = await translateWithCustomGeminiProvider(
+    [{ id: "a", text: "Hello" }],
+    {
+      apiKey: "test-key",
+      fetchImpl: async () => {
+        fetchCalled = true;
+      }
+    }
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "missing_custom_provider_config");
+  assert.equal(fetchCalled, false);
+});
+
+test("custom gemini provider requires api key before fetch", async () => {
+  let fetchCalled = false;
+  const result = await translateWithCustomGeminiProvider(
+    [{ id: "a", text: "Hello" }],
+    {
+      providerConfig: CUSTOM_PROVIDER_CONFIG,
+      fetchImpl: async () => {
+        fetchCalled = true;
+      }
+    }
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "missing_api_key");
+  assert.equal(fetchCalled, false);
+});
+
+test("custom gemini provider sends api key in header and preserves order", async () => {
+  const fetchImpl = makeCustomGeminiFetch();
+  const result = await translateWithCustomGeminiProvider(
+    [
+      { id: "a", text: "Hello" },
+      { id: "b", text: "Good morning" }
+    ],
+    {
+      qualityMode: "natural",
+      apiKey: "test-key",
+      providerConfig: CUSTOM_PROVIDER_CONFIG,
+      fetchImpl
+    }
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.provider.id, "custom_gemini");
+  assert.deepEqual(result.translations, [
+    { id: "a", text: "你好" },
+    { id: "b", text: "早上好" }
+  ]);
+  assert.equal(fetchImpl.calls.length, 1);
+  assert.equal(fetchImpl.calls[0].url, CUSTOM_PROVIDER_ENDPOINT);
+  assert.equal(fetchImpl.calls[0].options.method, "POST");
+  assert.equal(fetchImpl.calls[0].options.credentials, "omit");
+  assert.equal(fetchImpl.calls[0].options.headers["x-goog-api-key"], "test-key");
+  assert.deepEqual(Object.keys(fetchImpl.calls[0].options.headers).sort(), ["Content-Type", "x-goog-api-key"]);
+  assert.equal(new URL(fetchImpl.calls[0].url).searchParams.has("key"), false);
+  assert.equal(new URL(fetchImpl.calls[0].url).searchParams.has("api_key"), false);
+
+  const request = JSON.parse(fetchImpl.calls[0].options.body);
+  const prompt = request.contents[0].parts[0].text;
+  assert.equal(request.generationConfig.thinkingConfig.thinkingBudget, 0);
+  assert.match(prompt, /Natural mode/);
+  assert.match(prompt, /No explanations/);
+  assert.doesNotMatch(prompt, /白话/);
+});
+
+test("custom gemini provider deep prompt requires translated Chinese text", async () => {
+  const fetchImpl = makeCustomGeminiFetchWithText(JSON.stringify([
+    { id: "a", text: "深度翻译后的中文。" }
+  ]));
+  const result = await translateWithCustomGeminiProvider(
+    [{ id: "a", text: "A long English sentence should not be copied unchanged." }],
+    {
+      qualityMode: "deep",
+      apiKey: "test-key",
+      providerConfig: CUSTOM_PROVIDER_CONFIG,
+      fetchImpl
+    }
+  );
+  const request = JSON.parse(fetchImpl.calls[0].options.body);
+  const prompt = request.contents[0].parts[0].text;
+
+  assert.equal(result.ok, true);
+  assert.equal(request.generationConfig.thinkingConfig.thinkingBudget, 0);
+  assert.match(prompt, /Deep mode/);
+  assert.match(prompt, /Start with Chinese, not source English/);
+  assert.match(prompt, /do not copy source English sentences/);
+  assert.match(prompt, /（白话：\.\.\.）/);
+  assert.match(prompt, /under 18 Chinese characters/);
+  assert.match(prompt, /translate the source text field into Simplified Chinese/);
+});
+
+test("custom gemini provider retries copy-heavy deep output with stricter prompt", async () => {
+  const sourceText = "You ask an agent to build an e-commerce site, but the checkout button in the shopping cart does nothing.";
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    calls.push({ url, options });
+    const text = calls.length === 1
+      ? JSON.stringify([{ id: "a", text: `${sourceText} （白话：没定义完成）` }])
+      : JSON.stringify([{ id: "a", text: "你让一个 agent 搭建电商网站，但购物车里的结账按钮没有任何作用。（白话：先定义完成）" }]);
+
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return {
+          candidates: [
+            {
+              content: {
+                role: "model",
+                parts: [{ text }]
+              }
+            }
+          ]
+        };
+      }
+    };
+  };
+  const result = await translateWithCustomGeminiProvider(
+    [{ id: "a", text: sourceText }],
+    {
+      qualityMode: "deep",
+      apiKey: "test-key",
+      providerConfig: CUSTOM_PROVIDER_CONFIG,
+      fetchImpl
+    }
+  );
+  const retryPrompt = JSON.parse(calls[1].options.body).contents[0].parts[0].text;
+
+  assert.equal(result.ok, true);
+  assert.equal(calls.length, 2);
+  assert.match(retryPrompt, /Retry instruction/);
+  assert.deepEqual(result.translations, [
+    { id: "a", text: "你让一个 agent 搭建电商网站，但购物车里的结账按钮没有任何作用。（白话：先定义完成）" }
+  ]);
+});
+
+test("custom gemini provider keeps translated items when retry leaves one title untranslated", async () => {
+  const titleText = "Lecture 08. Use Feature Lists to Constrain What the Agent Does";
+  const bodyText = "You ask an agent to build an e-commerce site, but the checkout button in the shopping cart does nothing.";
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    calls.push({ url, options });
+    const text = JSON.stringify([
+      { id: "title", text: titleText },
+      { id: "body", text: "你让一个 agent 搭建电商网站，但购物车里的结账按钮没有任何作用。" }
+    ]);
+
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return {
+          candidates: [
+            {
+              content: {
+                role: "model",
+                parts: [{ text }]
+              }
+            }
+          ]
+        };
+      }
+    };
+  };
+  const result = await translateWithCustomGeminiProvider(
+    [
+      { id: "title", text: titleText },
+      { id: "body", text: bodyText }
+    ],
+    {
+      qualityMode: "natural",
+      apiKey: "test-key",
+      providerConfig: CUSTOM_PROVIDER_CONFIG,
+      fetchImpl
+    }
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(result.translations, [
+    { id: "body", text: "你让一个 agent 搭建电商网站，但购物车里的结账按钮没有任何作用。" }
+  ]);
+});
+
+test("custom gemini provider fails when retry leaves every item untranslated", async () => {
+  const titleText = "Lecture 08. Use Feature Lists to Constrain What the Agent Does";
+  const bodyText = "You ask an agent to build an e-commerce site, but the checkout button in the shopping cart does nothing.";
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    calls.push({ url, options });
+    const text = JSON.stringify([
+      { id: "title", text: titleText },
+      { id: "body", text: bodyText }
+    ]);
+
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return {
+          candidates: [
+            {
+              content: {
+                role: "model",
+                parts: [{ text }]
+              }
+            }
+          ]
+        };
+      }
+    };
+  };
+  const result = await translateWithCustomGeminiProvider(
+    [
+      { id: "title", text: titleText },
+      { id: "body", text: bodyText }
+    ],
+    {
+      qualityMode: "natural",
+      apiKey: "test-key",
+      providerConfig: CUSTOM_PROVIDER_CONFIG,
+      fetchImpl
+    }
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(calls.length, 2);
+  assert.equal(result.error.code, "provider_response_invalid");
+  assert.equal(result.error.message, "The translation provider returned untranslated text.");
+  assert.equal(result.error.message.includes("test-key"), false);
+  assert.equal(result.error.message.includes(titleText), false);
+});
+
+test("custom gemini provider accepts object wrapped translation responses", async () => {
+  const fetchImpl = makeCustomGeminiFetchWithText(JSON.stringify({
+    translations: [
+      { id: "a", text: "你好" },
+      { id: "b", translatedText: "早上好" }
+    ]
+  }));
+  const result = await translateWithCustomGeminiProvider(
+    [
+      { id: "a", text: "Hello" },
+      { id: "b", text: "Good morning" }
+    ],
+    {
+      apiKey: "test-key",
+      providerConfig: CUSTOM_PROVIDER_CONFIG,
+      fetchImpl
+    }
+  );
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.translations, [
+    { id: "a", text: "你好" },
+    { id: "b", text: "早上好" }
+  ]);
+});
+
+test("custom gemini provider accepts keyed object translation responses", async () => {
+  const fetchImpl = makeCustomGeminiFetchWithText(JSON.stringify({
+    a: "你好",
+    b: { translation: "早上好" }
+  }));
+  const result = await translateWithCustomGeminiProvider(
+    [
+      { id: "a", text: "Hello" },
+      { id: "b", text: "Good morning" }
+    ],
+    {
+      apiKey: "test-key",
+      providerConfig: CUSTOM_PROVIDER_CONFIG,
+      fetchImpl
+    }
+  );
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.translations, [
+    { id: "a", text: "你好" },
+    { id: "b", text: "早上好" }
+  ]);
+});
+
+test("custom gemini provider accepts ordered responses without ids", async () => {
+  const fetchImpl = makeCustomGeminiFetchWithText(JSON.stringify({
+    translations: [
+      { text: "你好" },
+      { translated_text: "早上好" }
+    ]
+  }));
+  const result = await translateWithCustomGeminiProvider(
+    [
+      { id: "a", text: "Hello" },
+      { id: "b", text: "Good morning" }
+    ],
+    {
+      apiKey: "test-key",
+      providerConfig: CUSTOM_PROVIDER_CONFIG,
+      fetchImpl
+    }
+  );
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.translations, [
+    { id: "a", text: "你好" },
+    { id: "b", text: "早上好" }
+  ]);
+});
+
+test("custom gemini provider accepts jsonl translation responses", async () => {
+  const fetchImpl = makeCustomGeminiFetchWithText([
+    JSON.stringify({ id: "a", text: "你好" }),
+    JSON.stringify({ id: "b", text: "早上好" })
+  ].join("\n"));
+  const result = await translateWithCustomGeminiProvider(
+    [
+      { id: "a", text: "Hello" },
+      { id: "b", text: "Good morning" }
+    ],
+    {
+      apiKey: "test-key",
+      providerConfig: CUSTOM_PROVIDER_CONFIG,
+      fetchImpl
+    }
+  );
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.translations, [
+    { id: "a", text: "你好" },
+    { id: "b", text: "早上好" }
+  ]);
+});
+
+test("custom gemini provider accepts pair arrays and single key objects", async () => {
+  const fetchImpl = makeCustomGeminiFetchWithText(JSON.stringify([
+    ["a", "你好"],
+    { b: "早上好" }
+  ]));
+  const result = await translateWithCustomGeminiProvider(
+    [
+      { id: "a", text: "Hello" },
+      { id: "b", text: "Good morning" }
+    ],
+    {
+      apiKey: "test-key",
+      providerConfig: CUSTOM_PROVIDER_CONFIG,
+      fetchImpl
+    }
+  );
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.translations, [
+    { id: "a", text: "你好" },
+    { id: "b", text: "早上好" }
+  ]);
+});
+
+test("custom gemini provider accepts numbered plain text lines when count matches", async () => {
+  const fetchImpl = makeCustomGeminiFetchWithText("1. 你好\n2. 早上好");
+  const result = await translateWithCustomGeminiProvider(
+    [
+      { id: "a", text: "Hello" },
+      { id: "b", text: "Good morning" }
+    ],
+    {
+      apiKey: "test-key",
+      providerConfig: CUSTOM_PROVIDER_CONFIG,
+      fetchImpl
+    }
+  );
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.translations, [
+    { id: "a", text: "你好" },
+    { id: "b", text: "早上好" }
+  ]);
+});
+
+test("custom gemini provider accepts id table plain text lines", async () => {
+  const fetchImpl = makeCustomGeminiFetchWithText("| a | 你好 |\n| b | 早上好 |");
+  const result = await translateWithCustomGeminiProvider(
+    [
+      { id: "a", text: "Hello" },
+      { id: "b", text: "Good morning" }
+    ],
+    {
+      apiKey: "test-key",
+      providerConfig: CUSTOM_PROVIDER_CONFIG,
+      fetchImpl
+    }
+  );
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.translations, [
+    { id: "a", text: "你好" },
+    { id: "b", text: "早上好" }
+  ]);
+});
+
+test("custom gemini provider accepts nested keyed translation objects", async () => {
+  const fetchImpl = makeCustomGeminiFetchWithText(JSON.stringify({
+    data: {
+      translations: {
+        a: "你好",
+        b: { targetText: "早上好" }
+      }
+    }
+  }));
+  const result = await translateWithCustomGeminiProvider(
+    [
+      { id: "a", text: "Hello" },
+      { id: "b", text: "Good morning" }
+    ],
+    {
+      apiKey: "test-key",
+      providerConfig: CUSTOM_PROVIDER_CONFIG,
+      fetchImpl
+    }
+  );
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.translations, [
+    { id: "a", text: "你好" },
+    { id: "b", text: "早上好" }
+  ]);
+});
+
+test("custom gemini provider accepts plain translated text for one segment", async () => {
+  const fetchImpl = makeCustomGeminiFetchWithText("你好");
+  const result = await translateWithCustomGeminiProvider(
+    [{ id: "a", text: "Hello" }],
+    {
+      apiKey: "test-key",
+      providerConfig: CUSTOM_PROVIDER_CONFIG,
+      fetchImpl
+    }
+  );
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.translations, [
+    { id: "a", text: "你好" }
+  ]);
+});
+
+test("custom gemini provider splits oversized paid requests into bounded batches", async () => {
+  const maxRequestSize = 1000;
+  const fetchImpl = makeBatchingCustomGeminiFetch({ maxRequestSize });
+  const result = await translateWithCustomGeminiProvider(
+    [
+      { id: "a", text: "A".repeat(120) },
+      { id: "b", text: "B".repeat(120) },
+      { id: "c", text: "C".repeat(120) }
+    ],
+    {
+      qualityMode: "natural",
+      apiKey: "test-key",
+      providerConfig: CUSTOM_PROVIDER_CONFIG,
+      maxRequestSize,
+      fetchImpl
+    }
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(result.provider.id, "custom_gemini");
+  assert.equal(fetchImpl.calls.length > 1, true);
+  assert.deepEqual(result.translations, [
+    { id: "a", text: "zh:a" },
+    { id: "b", text: "zh:b" },
+    { id: "c", text: "zh:c" }
+  ]);
+
+  for (const call of fetchImpl.calls) {
+    assert.equal(call.options.body.length <= maxRequestSize, true);
+    assert.equal(call.options.headers["x-goog-api-key"], "test-key");
+    assert.deepEqual(Object.keys(call.options.headers).sort(), ["Content-Type", "x-goog-api-key"]);
+  }
+});
+
+test("custom gemini provider splits deep requests into smaller latency batches", async () => {
+  const fetchImpl = makeBatchingCustomGeminiFetch({ maxRequestSize: CUSTOM_GEMINI_PROVIDER.maxRequestSize });
+  const result = await translateWithCustomGeminiProvider(
+    Array.from({ length: 70 }, (_, index) => ({
+      id: `s${index}`,
+      text: "A".repeat(140)
+    })),
+    {
+      qualityMode: "deep",
+      apiKey: "test-key",
+      providerConfig: CUSTOM_PROVIDER_CONFIG,
+      fetchImpl
+    }
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(fetchImpl.calls.length > 1, true);
+
+  for (const call of fetchImpl.calls) {
+    assert.equal(call.options.body.length <= CUSTOM_GEMINI_PROVIDER.maxRequestSize, true);
+  }
+});
+
+test("custom gemini provider runs paid batches with bounded concurrency", async () => {
+  const maxRequestSize = 3000;
+  const fetchImpl = makeConcurrentBatchingCustomGeminiFetch({ maxRequestSize, releaseAfter: 2 });
+  const result = await translateWithCustomGeminiProvider(
+    [
+      { id: "a", text: "A".repeat(2000) },
+      { id: "b", text: "B".repeat(2000) },
+      { id: "c", text: "C".repeat(2000) },
+      { id: "d", text: "D".repeat(2000) }
+    ],
+    {
+      qualityMode: "deep",
+      apiKey: "test-key",
+      providerConfig: CUSTOM_PROVIDER_CONFIG,
+      maxRequestSize,
+      maxConcurrentRequests: 2,
+      fetchImpl
+    }
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(fetchImpl.calls.length > 2, true);
+  assert.equal(fetchImpl.maxActive, 2);
+  assert.deepEqual(result.translations, [
+    { id: "a", text: "zh:a" },
+    { id: "b", text: "zh:b" },
+    { id: "c", text: "zh:c" },
+    { id: "d", text: "zh:d" }
+  ]);
+});
+
+test("custom gemini provider uses faster natural mode default concurrency", async () => {
+  const maxRequestSize = 1800;
+  const fetchImpl = makeConcurrentBatchingCustomGeminiFetch({ maxRequestSize, releaseAfter: 6 });
+  const result = await translateWithCustomGeminiProvider(
+    Array.from({ length: 8 }, (_, index) => ({
+      id: `s${index}`,
+      text: "A".repeat(1000)
+    })),
+    {
+      qualityMode: "natural",
+      apiKey: "test-key",
+      providerConfig: CUSTOM_PROVIDER_CONFIG,
+      maxRequestSize,
+      fetchImpl
+    }
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(fetchImpl.calls.length, 8);
+  assert.equal(fetchImpl.maxActive, 6);
+});
+
+test("custom gemini provider uses higher default concurrency for deep mode", async () => {
+  const maxRequestSize = 3000;
+  const fetchImpl = makeConcurrentBatchingCustomGeminiFetch({ maxRequestSize, releaseAfter: 8 });
+  const result = await translateWithCustomGeminiProvider(
+    Array.from({ length: 8 }, (_, index) => ({
+      id: `s${index}`,
+      text: "A".repeat(2000)
+    })),
+    {
+      qualityMode: "deep",
+      apiKey: "test-key",
+      providerConfig: CUSTOM_PROVIDER_CONFIG,
+      maxRequestSize,
+      fetchImpl
+    }
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(fetchImpl.calls.length, 8);
+  assert.equal(fetchImpl.maxActive, 8);
+});
+
+test("custom gemini provider caps paid batch concurrency", async () => {
+  const maxRequestSize = 3000;
+  const fetchImpl = makeConcurrentBatchingCustomGeminiFetch({ maxRequestSize, releaseAfter: 8 });
+  const result = await translateWithCustomGeminiProvider(
+    Array.from({ length: 8 }, (_, index) => ({
+      id: `s${index}`,
+      text: "A".repeat(2000)
+    })),
+    {
+      qualityMode: "deep",
+      apiKey: "test-key",
+      providerConfig: CUSTOM_PROVIDER_CONFIG,
+      maxRequestSize,
+      maxConcurrentRequests: 99,
+      fetchImpl
+    }
+  );
+
+  assert.equal(result.ok, true);
+  assert.equal(fetchImpl.calls.length, 8);
+  assert.equal(fetchImpl.maxActive, 8);
+});
+
+test("custom gemini provider maps invalid responses to structured errors", async () => {
+  const fetchImpl = async () => ({
+    ok: true,
+    status: 200,
+    async json() {
+      return { candidates: [{ content: { parts: [{ text: "not json" }] } }] };
+    }
+  });
+  const result = await translateWithCustomGeminiProvider(
+    [{ id: "a", text: "Hello private text" }],
+    { apiKey: "test-key",
+      providerConfig: CUSTOM_PROVIDER_CONFIG, fetchImpl }
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "provider_response_invalid");
+  assert.equal(result.error.message.includes("Hello private text"), false);
+});
+
+test("custom gemini provider parses openai-compatible choices", () => {
+  const text = parseCustomGeminiResponse({
+    choices: [
+      {
+        message: {
+          content: "[{\"id\":\"a\",\"text\":\"你好\"}]"
+        }
+      }
+    ]
+  });
+
+  assert.equal(text, "[{\"id\":\"a\",\"text\":\"你好\"}]");
+});
+
+test("custom gemini provider parses openai-compatible content arrays", () => {
+  const text = parseCustomGeminiResponse({
+    choices: [
+      {
+        message: {
+          content: [
+            { type: "text", text: "1. 你好" },
+            { type: "text", text: "2. 早上好" }
+          ]
+        }
+      }
+    ]
+  });
+
+  assert.equal(text, "1. 你好\n2. 早上好");
+});
+
+test("custom gemini provider parses direct output text arrays", () => {
+  const text = parseCustomGeminiResponse({
+    output: [
+      {
+        content: [
+          { type: "output_text", text: "[{\"id\":\"a\",\"text\":\"你好\"}]" }
+        ]
+      }
+    ]
+  });
+
+  assert.equal(text, "[{\"id\":\"a\",\"text\":\"你好\"}]");
+});
+
+test("custom gemini provider falls back to raw response text", async () => {
+  const fetchImpl = async () => ({
+    ok: true,
+    status: 200,
+    clone() {
+      return {
+        async text() {
+          return "1. 你好\n2. 早上好";
+        }
+      };
+    },
+    async json() {
+      throw new Error("not json");
+    }
+  });
+  const result = await translateWithCustomGeminiProvider(
+    [
+      { id: "a", text: "Hello" },
+      { id: "b", text: "Good morning" }
+    ],
+    { apiKey: "test-key",
+      providerConfig: CUSTOM_PROVIDER_CONFIG, fetchImpl }
+  );
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.translations, [
+    { id: "a", text: "你好" },
+    { id: "b", text: "早上好" }
+  ]);
+});
+
+test("custom gemini provider maps rejected keys to a sanitized error", async () => {
+  const fetchImpl = async () => ({
+    ok: false,
+    status: 401,
+    async json() {
+      return { error: "Token is invalid" };
+    }
+  });
+  const result = await translateWithCustomGeminiProvider(
+    [{ id: "a", text: "Hello private text" }],
+    { apiKey: "test-key",
+      providerConfig: CUSTOM_PROVIDER_CONFIG, fetchImpl }
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "provider_http_error");
+  assert.equal(result.error.status, 401);
+  assert.equal(result.error.message, "The translation provider rejected the API Key.");
+  assert.equal(result.error.message.includes("test-key"), false);
+  assert.equal(result.error.message.includes("Hello private text"), false);
+});
+
+test("custom gemini provider maps missing model endpoints to a config error", async () => {
+  const fetchImpl = async () => ({
+    ok: false,
+    status: 404,
+    async json() {
+      return { error: "not found" };
+    }
+  });
+  const result = await translateWithCustomGeminiProvider(
+    [{ id: "a", text: "Hello private text" }],
+    { apiKey: "test-key",
+      providerConfig: CUSTOM_PROVIDER_CONFIG, fetchImpl }
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "provider_http_error");
+  assert.equal(result.error.status, 404);
+  assert.equal(result.error.message, "The translation provider did not accept the configured Base URL or model.");
+  assert.equal(result.error.message.includes("test-key"), false);
+  assert.equal(result.error.message.includes("Hello private text"), false);
+});
+
+test("custom gemini provider maps model payload errors to a config error", async () => {
+  const fetchImpl = async () => ({
+    ok: true,
+    status: 200,
+    async json() {
+      return { error: { code: 400, message: "Model not found. key=secret-value" } };
+    }
+  });
+  const result = await translateWithCustomGeminiProvider(
+    [{ id: "a", text: "Hello private text" }],
+    { apiKey: "test-key",
+      providerConfig: CUSTOM_PROVIDER_CONFIG, fetchImpl }
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "provider_http_error");
+  assert.equal(result.error.status, 400);
+  assert.equal(result.error.message, "The translation provider did not accept the configured Base URL or model.");
+  assert.equal(result.error.message.includes("test-key"), false);
+  assert.equal(result.error.message.includes("secret-value"), false);
+  assert.equal(result.error.message.includes("Hello private text"), false);
+});
+
+test("custom gemini provider maps ok error payloads to sanitized provider errors", async () => {
+  const fetchImpl = async () => ({
+    ok: true,
+    status: 200,
+    async json() {
+      return { error: { code: 403, message: "API key not valid. key=secret-value" } };
+    }
+  });
+  const result = await translateWithCustomGeminiProvider(
+    [{ id: "a", text: "Hello private text" }],
+    { apiKey: "test-key",
+      providerConfig: CUSTOM_PROVIDER_CONFIG, fetchImpl }
+  );
+
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "provider_http_error");
+  assert.equal(result.error.status, 403);
+  assert.equal(result.error.message, "The translation provider rejected the API Key.");
+  assert.equal(result.error.message.includes("test-key"), false);
+  assert.equal(result.error.message.includes("secret-value"), false);
+  assert.equal(result.error.message.includes("Hello private text"), false);
+});
+
+test("custom gemini provider parses text response", () => {
+  const text = parseCustomGeminiResponse({
+    candidates: [
+      {
+        content: {
+          role: "model",
+          parts: [
+            { text: "[{\"id\":\"a\",\"text\":\"你好\"}]" },
+            { thoughtSignature: "redacted" }
+          ]
+        }
+      }
+    ]
+  });
+
+  assert.equal(text, "[{\"id\":\"a\",\"text\":\"你好\"}]");
+});
+
+function makeCustomGeminiFetch() {
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    calls.push({ url, options });
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return {
+          candidates: [
+            {
+              content: {
+                role: "model",
+                parts: [
+                  {
+                    text: JSON.stringify([
+                      { id: "a", text: "你好" },
+                      { id: "b", text: "早上好" }
+                    ])
+                  }
+                ]
+              }
+            }
+          ]
+        };
+      }
+    };
+  };
+
+  fetchImpl.calls = calls;
+  return fetchImpl;
+}
+
+function makeCustomGeminiFetchWithText(text) {
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    calls.push({ url, options });
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return {
+          candidates: [
+            {
+              content: {
+                role: "model",
+                parts: [
+                  { text }
+                ]
+              }
+            }
+          ]
+        };
+      }
+    };
+  };
+
+  fetchImpl.calls = calls;
+  return fetchImpl;
+}
+
+function makeBatchingCustomGeminiFetch({ maxRequestSize }) {
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    calls.push({ url, options });
+    assert.equal(options.body.length <= maxRequestSize, true);
+    const segments = parseSegmentsFromCustomGeminiRequest(options.body);
+
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return {
+          candidates: [
+            {
+              content: {
+                role: "model",
+                parts: [
+                  {
+                    text: JSON.stringify(segments.map((segment) => ({
+                      id: segment.id,
+                      text: `zh:${segment.id}`
+                    })))
+                  }
+                ]
+              }
+            }
+          ]
+        };
+      }
+    };
+  };
+
+  fetchImpl.calls = calls;
+  return fetchImpl;
+}
+
+function makeConcurrentBatchingCustomGeminiFetch({ maxRequestSize, releaseAfter }) {
+  const calls = [];
+  const pendingReleases = [];
+  let active = 0;
+  let maxActive = 0;
+
+  const fetchImpl = async (url, options) => {
+    active += 1;
+    maxActive = Math.max(maxActive, active);
+    calls.push({ url, options });
+    assert.equal(options.body.length <= maxRequestSize, true);
+    const segments = parseSegmentsFromCustomGeminiRequest(options.body);
+
+    await waitForConcurrentRelease(pendingReleases, releaseAfter);
+    active -= 1;
+
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return {
+          candidates: [
+            {
+              content: {
+                role: "model",
+                parts: [
+                  {
+                    text: JSON.stringify(segments.map((segment) => ({
+                      id: segment.id,
+                      text: `zh:${segment.id}`
+                    })))
+                  }
+                ]
+              }
+            }
+          ]
+        };
+      }
+    };
+  };
+
+  Object.defineProperty(fetchImpl, "maxActive", {
+    get() {
+      return maxActive;
+    }
+  });
+  fetchImpl.calls = calls;
+  return fetchImpl;
+}
+
+function waitForConcurrentRelease(pendingReleases, releaseAfter) {
+  return new Promise((resolve) => {
+    pendingReleases.push(resolve);
+
+    if (pendingReleases.length >= releaseAfter) {
+      for (const release of pendingReleases.splice(0)) {
+        release();
+      }
+      return;
+    }
+
+    setTimeout(() => {
+      const index = pendingReleases.indexOf(resolve);
+
+      if (index >= 0) {
+        for (const release of pendingReleases.splice(0)) {
+          release();
+        }
+      }
+    }, 0);
+  });
+}
+
+function parseSegmentsFromCustomGeminiRequest(body) {
+  const request = JSON.parse(body);
+  const prompt = request.contents[0].parts[0].text;
+  return JSON.parse(prompt.split("\n").at(-1));
+}

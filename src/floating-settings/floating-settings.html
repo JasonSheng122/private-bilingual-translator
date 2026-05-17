@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <title>Floating Translation Settings</title>
+    <link rel="stylesheet" href="floating-settings.css">
+  </head>
+  <body>
+    <main class="settings">
+      <p class="provider-name" id="providerName">正在读取供应商...</p>
+
+      <section id="customProviderConfig" class="custom-provider-config" aria-label="Custom provider config" hidden>
+        <label class="field">
+          <span>Base URL</span>
+          <input id="customBaseUrlInput" type="url" autocomplete="off" placeholder="https://api.example.com">
+        </label>
+
+        <label class="field">
+          <span>model</span>
+          <input id="customModelInput" type="text" autocomplete="off" placeholder="gemini-2.5-flash-lite">
+        </label>
+
+        <button id="saveCustomProviderConfigButton" type="button">保存中转站配置</button>
+      </section>
+
+      <p class="key-status" id="apiKeyStatus" data-state="unknown">正在检查 Key 状态...</p>
+
+      <label class="field">
+        <span>API Key</span>
+        <input id="apiKeyInput" type="password" autocomplete="off" placeholder="自然版 / 深度版需要">
+      </label>
+
+      <label class="field">
+        <span>Key 保存方式</span>
+        <select id="apiKeyStorageMode">
+          <option value="session" selected>本次会话</option>
+          <option value="local">本地保存</option>
+        </select>
+      </label>
+
+      <div class="secondary-actions">
+        <button id="saveKeyButton" type="button">保存 Key</button>
+        <button id="clearSessionKeyButton" type="button">清除会话</button>
+      </div>
+
+      <button id="clearLocalKeyButton" type="button">清除本地 Key</button>
+
+      <p id="status" class="status" role="status"></p>
+    </main>
+
+    <script type="module" src="floating-settings.js"></script>
+  </body>
+</html>
