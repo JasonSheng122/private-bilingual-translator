@@ -67,6 +67,43 @@ test("dom collector skips likely target-language translated text", async () => {
   ]);
 });
 
+test("dom collector skips transient overlay text", async () => {
+  const document = createDocument();
+  document.body.appendChild(el(document, "p", "Readable article paragraph."));
+
+  const hoverCard = el(document, "div", "", { "data-testid": "HoverCard" });
+  hoverCard.appendChild(el(document, "p", "Hover biography preview paragraph."));
+  document.body.appendChild(hoverCard);
+
+  const tooltip = el(document, "div", "Tooltip helper text.", { role: "tooltip" });
+  document.body.appendChild(tooltip);
+
+  const api = await loadContentApi(document);
+  const result = api.collectSegments(document);
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(Array.from(result.segments, (segment) => segment.text), [
+    "Readable article paragraph."
+  ]);
+});
+
+test("dom collector skips interactive controls and compact social metrics", async () => {
+  const document = createDocument();
+  document.body.appendChild(el(document, "p", "Readable article paragraph."));
+  document.body.appendChild(el(document, "button", "Subscribe"));
+  document.body.appendChild(el(document, "div", "2.4K", { role: "button", "aria-label": "2458 reposts. Repost" }));
+  document.body.appendChild(el(document, "a", "453.6K", { href: "/example/status/1/analytics" }));
+  document.body.appendChild(el(document, "a", "b00kd.com", { href: "https://t.co/example" }));
+
+  const api = await loadContentApi(document);
+  const result = api.collectSegments(document);
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(Array.from(result.segments, (segment) => segment.text), [
+    "Readable article paragraph."
+  ]);
+});
+
 test("replace renderer replaces once and restores original text", async () => {
   const document = createDocument();
   const paragraph = el(document, "p", "Original paragraph");
@@ -112,7 +149,7 @@ test("replace renderer translates sibling text nodes around inline code", async 
   const document = createDocument();
   const paragraph = document.createElement("p");
   paragraph.appendChild(document.createTextNode("You created an "));
-  paragraph.appendChild(el(document, "code", "AGENTS.md"));
+  paragraph.appendChild(el(document, "code", "README.md"));
   paragraph.appendChild(document.createTextNode(" and packed every rule into it."));
   document.body.appendChild(paragraph);
 
@@ -131,7 +168,7 @@ test("replace renderer translates sibling text nodes around inline code", async 
     "and packed every rule into it."
   ]);
   assert.equal(rendered.renderedCount, 2);
-  assert.equal(paragraph.textContent, "你创建了一个 AGENTS.md 并把每条规则都放了进去。");
+  assert.equal(paragraph.textContent, "你创建了一个 README.md 并把每条规则都放了进去。");
   assert.equal(paragraph.getAttribute("data-pbt-replaced"), "true");
 });
 
@@ -768,16 +805,26 @@ test("floating replace toggle shows checkmark and restores rendered text", async
   );
 });
 
-test("floating translate button shows animated loading dots while request is pending", async () => {
+test("floating translate button shows spinner while request is pending", async () => {
   const document = createDocument();
-  document.body.appendChild(el(document, "p", "Original paragraph"));
+  const paragraph = el(document, "p", "Original paragraph");
+  document.body.appendChild(paragraph);
   let pendingCallback = null;
+  let collected = null;
+  let api;
 
-  const api = await loadContentApi(document, {
+  api = await loadContentApi(document, {
     location: { href: "https://example.com/article" },
     sendMessage(message, callback) {
       if (message.type === "PBT_TRANSLATE_PAGE") {
-        pendingCallback = callback;
+        collected = api.collectSegments(document, { showPendingIndicators: true });
+        pendingCallback = () => {
+          api.renderTranslations({
+            displayMode: "replace",
+            translations: [{ id: collected.segments[0].id, text: "已翻译段落" }]
+          });
+          callback({ ok: true, status: "replaced" });
+        };
         return;
       }
 
@@ -804,34 +851,34 @@ test("floating translate button shows animated loading dots while request is pen
 
   const style = findNode(document.body, (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "floating-style");
   const translateButton = findNode(document.body, (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "translate-toggle");
-  const progress = findNode(document.body, (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "translate-progress");
 
   translateButton.click();
 
   const loading = findNode(translateButton, (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "translate-loading");
-  const dotDelays = Array.from(loading.childNodes, (node) => node.style.animationDelay);
+  const pendingIndicator = findNode(paragraph, (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "translation-pending");
+  const pendingSpinner = findNode(pendingIndicator, (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "translation-pending-spinner");
 
-  assert.match(style.textContent, /@keyframes pbt-floating-dot-wave/);
-  assert.match(style.textContent, /@keyframes pbt-floating-status-pulse/);
+  assert.match(style.textContent, /@keyframes pbt-spinner-rotate/);
   assert.equal(translateButton.disabled, true);
   assert.equal(translateButton.getAttribute("data-pbt-loading"), "translate");
   assert.equal(translateButton.getAttribute("title"), "正在翻译当前网址");
-  assert.equal(translateButton.textContent, "...");
-  assert.equal(progress.style.display, "inline-flex");
-  assert.match(progress.textContent, /正在翻译，请稍等/);
+  assert.equal(translateButton.textContent, "");
   assert.equal(loading.getAttribute("data-pbt-control"), "translate-loading");
-  assert.deepEqual(dotDelays, ["0ms", "120ms", "240ms"]);
+  assert.equal(loading.style.animation, "pbt-spinner-rotate 680ms linear infinite");
+  assert.equal(pendingSpinner.style.animation, "pbt-spinner-rotate 680ms linear infinite");
+  assert.equal(findNode(document.body, (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "translate-progress"), null);
 
-  pendingCallback({ ok: true, status: "replaced" });
+  pendingCallback();
 
   assert.equal(translateButton.disabled, false);
   assert.equal(translateButton.hasAttribute("data-pbt-loading"), false);
   assert.equal(translateButton.textContent, "译✓");
   assert.ok(getTranslateCheckmark(translateButton));
-  assert.equal(progress.style.display, "none");
+  assert.equal(paragraph.textContent, "已翻译段落");
+  assert.equal(countPendingIndicators(document.body), 0);
 });
 
-test("floating translate paints loading status before sending the request", async () => {
+test("floating translate paints loading spinner before sending the request", async () => {
   const document = createDocument();
   document.body.appendChild(el(document, "p", "Original paragraph"));
   const sentMessages = [];
@@ -856,12 +903,12 @@ test("floating translate paints loading status before sending the request", asyn
   });
 
   const translateButton = findNode(document.body, (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "translate-toggle");
-  const progress = findNode(document.body, (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "translate-progress");
 
   translateButton.click();
 
   assert.equal(translateButton.disabled, true);
-  assert.equal(progress.style.display, "inline-flex");
+  assert.equal(findNode(translateButton, (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "translate-loading").style.animation, "pbt-spinner-rotate 680ms linear infinite");
+  assert.equal(findNode(document.body, (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "translate-progress"), null);
   assert.equal(sentMessages.length, 0);
   assert.equal(frameCallbacks.length, 1);
 
@@ -870,7 +917,6 @@ test("floating translate paints loading status before sending the request", asyn
   assert.equal(sentMessages.length, 2);
   assert.equal(sentMessages[0].type, "PBT_TRANSLATE_PAGE");
   assert.equal(sentMessages[1].type, "PBT_SET_SITE_TRANSLATION_SETTINGS");
-  assert.equal(progress.style.display, "none");
   assert.equal(translateButton.disabled, false);
 });
 
@@ -928,7 +974,6 @@ test("floating restore sends immediately after deferred translate", async () => 
   });
 
   const translateButton = findNode(document.body, (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "translate-toggle");
-  const progress = findNode(document.body, (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "translate-progress");
 
   translateButton.click();
   assert.equal(sentMessages.length, 0);
@@ -938,7 +983,7 @@ test("floating restore sends immediately after deferred translate", async () => 
   assert.equal(paragraph.textContent, "已翻译段落");
   assert.equal(translateButton.textContent, "译✓");
   assert.ok(getTranslateCheckmark(translateButton));
-  assert.equal(progress.style.display, "none");
+  assert.equal(findNode(document.body, (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "translate-progress"), null);
 
   translateButton.click();
 
@@ -946,7 +991,7 @@ test("floating restore sends immediately after deferred translate", async () => 
   assert.equal(paragraph.textContent, "Original paragraph");
   assert.equal(translateButton.textContent, "译");
   assert.equal(getTranslateCheckmark(translateButton), null);
-  assert.equal(progress.style.display, "none");
+  assert.equal(findNode(document.body, (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "translate-progress"), null);
   assert.deepEqual(
     sentMessages
       .filter((message) => message.type === "PBT_TRANSLATE_PAGE" || message.type === "PBT_RESTORE_PAGE")
@@ -1309,14 +1354,15 @@ test("floating translation reruns for new spa content while active", async () =>
   assert.equal(sentMessages[0].incremental, true);
 });
 
-test("floating auto translation shows progress while spa content is translating", async () => {
+test("floating auto translation shows pending spinner on new source text", async () => {
   const document = createDocument();
   const firstParagraph = el(document, "p", "First paragraph");
   document.body.appendChild(firstParagraph);
   const sentMessages = [];
   let pendingCallback = null;
+  let api;
 
-  const api = await loadContentApi(document, {
+  api = await loadContentApi(document, {
     location: { href: "https://example.com/lecture" },
     mutationObserver: true,
     immediateTimers: true,
@@ -1324,6 +1370,10 @@ test("floating auto translation shows progress while spa content is translating"
       sentMessages.push(message);
 
       if (message.type === "PBT_TRANSLATE_PAGE") {
+        api.collectSegments(document, {
+          incremental: message.incremental === true,
+          showPendingIndicators: true
+        });
         pendingCallback = callback;
         return;
       }
@@ -1343,7 +1393,6 @@ test("floating auto translation shows progress while spa content is translating"
     translations: [{ id: firstCollected.segments[0].id, text: "[mock zh] First paragraph" }]
   });
 
-  const progress = findNode(document.body, (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "translate-progress");
   const secondParagraph = el(document, "p", "Second paragraph");
   document.body.appendChild(secondParagraph);
   api.__mutationObservers[0].trigger([
@@ -1353,12 +1402,12 @@ test("floating auto translation shows progress while spa content is translating"
   assert.equal(sentMessages.length, 1);
   assert.equal(sentMessages[0].type, "PBT_TRANSLATE_PAGE");
   assert.equal(sentMessages[0].incremental, true);
-  assert.equal(progress.style.display, "inline-flex");
-  assert.match(progress.textContent, /正在翻译，请稍等/);
+  assert.equal(countPendingIndicators(secondParagraph), 1);
+  assert.equal(findNode(document.body, (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "translate-progress"), null);
 
   pendingCallback({ ok: true, status: "bilingual" });
 
-  assert.equal(progress.style.display, "none");
+  assert.equal(countPendingIndicators(document.body), 0);
 });
 
 test("floating auto translation uses a short debounce for spa tab changes", async () => {
@@ -1409,6 +1458,182 @@ test("floating auto translation uses a short debounce for spa tab changes", asyn
   assert.equal(sentMessages.length, 1);
   assert.equal(sentMessages[0].type, "PBT_TRANSLATE_PAGE");
   assert.equal(sentMessages[0].incremental, true);
+});
+
+test("floating auto translation ignores transient hover overlays", async () => {
+  const document = createDocument();
+  const firstParagraph = el(document, "p", "First paragraph");
+  document.body.appendChild(firstParagraph);
+  const sentMessages = [];
+  const timerDelays = [];
+
+  const api = await loadContentApi(document, {
+    location: { href: "https://x.com/example/status/1" },
+    mutationObserver: true,
+    setTimeout(callback, delay) {
+      timerDelays.push(delay);
+      return callback;
+    },
+    clearTimeout() {},
+    sendMessage(message, callback) {
+      sentMessages.push(message);
+      callback({ ok: true, status: "bilingual" });
+    }
+  });
+
+  api.showFloatingTranslateButton({
+    qualityMode: "natural",
+    displayMode: "bilingual",
+    paidProvider: "custom_openai"
+  });
+  const firstCollected = api.collectSegments(document);
+  api.renderTranslations({
+    displayMode: "bilingual",
+    translations: [{ id: firstCollected.segments[0].id, text: "[mock zh] First paragraph" }]
+  });
+
+  const hoverCard = el(document, "div", "", { "data-testid": "HoverCard" });
+  hoverCard.appendChild(el(document, "p", "Hover biography preview paragraph."));
+  document.body.appendChild(hoverCard);
+  api.__mutationObservers[0].trigger([
+    { type: "childList", addedNodes: [hoverCard], target: document.body }
+  ]);
+
+  const tooltip = el(document, "div", "Tooltip helper text.", { role: "tooltip" });
+  document.body.appendChild(tooltip);
+  api.__mutationObservers[0].trigger([
+    { type: "childList", addedNodes: [tooltip], target: document.body }
+  ]);
+
+  assert.deepEqual(timerDelays, []);
+  assert.equal(sentMessages.length, 0);
+  assert.equal(countPendingIndicators(document.body), 0);
+  assert.equal(findNode(document.body, (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "translate-progress"), null);
+});
+
+test("floating auto translation follows new social scroll content", async () => {
+  const document = createDocument();
+  const firstParagraph = el(document, "p", "First paragraph");
+  document.body.appendChild(firstParagraph);
+  const sentMessages = [];
+  const collectedByMessage = [];
+  const timerDelays = [];
+  let api;
+
+  api = await loadContentApi(document, {
+    location: { href: "https://www.reddit.com/r/example/comments/abc/post/" },
+    mutationObserver: true,
+    setTimeout(callback, delay) {
+      timerDelays.push(delay);
+      callback();
+      return 1;
+    },
+    clearTimeout() {},
+    sendMessage(message, callback) {
+      sentMessages.push(message);
+
+      if (message.type === "PBT_TRANSLATE_PAGE") {
+        collectedByMessage.push(api.collectSegments(document, {
+          incremental: message.incremental === true,
+          showPendingIndicators: true
+        }));
+      }
+
+      callback({ ok: true, status: "bilingual" });
+    }
+  });
+
+  api.showFloatingTranslateButton({
+    qualityMode: "natural",
+    displayMode: "bilingual",
+    paidProvider: "custom_openai"
+  });
+  const firstCollected = api.collectSegments(document);
+  api.renderTranslations({
+    displayMode: "bilingual",
+    translations: [{ id: firstCollected.segments[0].id, text: "[mock zh] First paragraph" }]
+  });
+
+  const lateComment = el(document, "article", "");
+  lateComment.appendChild(el(document, "p", "Late comment paragraph should auto translate."));
+  document.body.appendChild(lateComment);
+  api.__mutationObservers[0].trigger([
+    { type: "childList", addedNodes: [lateComment], target: document.body }
+  ]);
+
+  const translateMessages = sentMessages.filter((message) => message.type === "PBT_TRANSLATE_PAGE");
+
+  assert.deepEqual(timerDelays, [80]);
+  assert.equal(translateMessages.length, 1);
+  assert.equal(translateMessages[0].incremental, true);
+  assert.deepEqual(Array.from(collectedByMessage[0].segments, (segment) => segment.text), [
+    "Late comment paragraph should auto translate."
+  ]);
+  assert.equal(countPendingIndicators(document.body), 0);
+  assert.equal(findNode(document.body, (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "translate-progress"), null);
+});
+
+test("floating auto translation follows new X scroll content", async () => {
+  const document = createDocument();
+  const firstParagraph = el(document, "p", "First paragraph");
+  document.body.appendChild(firstParagraph);
+  const sentMessages = [];
+  const collectedByMessage = [];
+  const timerDelays = [];
+  let api;
+
+  api = await loadContentApi(document, {
+    location: { href: "https://x.com/example/status/1" },
+    mutationObserver: true,
+    setTimeout(callback, delay) {
+      timerDelays.push(delay);
+      callback();
+      return 1;
+    },
+    clearTimeout() {},
+    sendMessage(message, callback) {
+      sentMessages.push(message);
+
+      if (message.type === "PBT_TRANSLATE_PAGE") {
+        collectedByMessage.push(api.collectSegments(document, {
+          incremental: message.incremental === true,
+          showPendingIndicators: true
+        }));
+      }
+
+      callback({ ok: true, status: "bilingual" });
+    }
+  });
+
+  api.showFloatingTranslateButton({
+    qualityMode: "natural",
+    displayMode: "bilingual",
+    paidProvider: "custom_openai"
+  });
+  const firstCollected = api.collectSegments(document);
+  api.renderTranslations({
+    displayMode: "bilingual",
+    translations: [{ id: firstCollected.segments[0].id, text: "[mock zh] First paragraph" }]
+  });
+
+  const latePost = el(document, "article", "");
+  latePost.appendChild(el(document, "p", "Late X post paragraph should auto translate."));
+  latePost.appendChild(el(document, "div", "2.4K", { role: "button", "aria-label": "2458 reposts. Repost" }));
+  latePost.appendChild(el(document, "a", "453.6K", { href: "/example/status/1/analytics" }));
+  latePost.appendChild(el(document, "a", "b00kd.com", { href: "https://t.co/example" }));
+  document.body.appendChild(latePost);
+  api.__mutationObservers[0].trigger([
+    { type: "childList", addedNodes: [latePost], target: document.body }
+  ]);
+
+  const translateMessages = sentMessages.filter((message) => message.type === "PBT_TRANSLATE_PAGE");
+
+  assert.deepEqual(timerDelays, [80]);
+  assert.equal(translateMessages.length, 1);
+  assert.equal(translateMessages[0].incremental, true);
+  assert.deepEqual(Array.from(collectedByMessage[0].segments, (segment) => segment.text), [
+    "Late X post paragraph should auto translate."
+  ]);
 });
 
 test("floating translation retries after hidden spa tab content settles", async () => {
@@ -1594,7 +1819,10 @@ test("floating translation starts latest spa mutation while one paid request is 
       sentMessages.push(message);
 
       if (message.type === "PBT_TRANSLATE_PAGE") {
-        collectedByMessage.push(api.collectSegments(document, { incremental: message.incremental === true }));
+        collectedByMessage.push(api.collectSegments(document, {
+          incremental: message.incremental === true,
+          showPendingIndicators: true
+        }));
       }
 
       pendingCallbacks.push(callback);
@@ -1606,7 +1834,6 @@ test("floating translation starts latest spa mutation while one paid request is 
     displayMode: "bilingual",
     paidProvider: "custom_openai"
   });
-  const progress = findNode(document.body, (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "translate-progress");
   const firstCollected = api.collectSegments(document);
   api.renderTranslations({
     displayMode: "bilingual",
@@ -1644,12 +1871,13 @@ test("floating translation starts latest spa mutation while one paid request is 
   assert.deepEqual(Array.from(collectedByMessage[1].segments, (segment) => segment.text), [
     "Third paragraph"
   ]);
-  assert.equal(progress.style.display, "inline-flex");
+  assert.equal(countPendingIndicators(document.body), 2);
+  assert.equal(findNode(document.body, (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "translate-progress"), null);
 
   pendingCallbacks[0]({ ok: true, status: "bilingual" });
-  assert.equal(progress.style.display, "inline-flex");
+  assert.equal(countPendingIndicators(document.body), 2);
   pendingCallbacks[1]({ ok: true, status: "bilingual" });
-  assert.equal(progress.style.display, "none");
+  assert.equal(countPendingIndicators(document.body), 0);
 });
 
 test("floating translation caps overlapping spa mutation requests", async () => {
@@ -2468,6 +2696,18 @@ function countTranslationNodes(root) {
 
   walk(root, (node) => {
     if (node.nodeType === 1 && node.hasAttribute("data-pbt-translation")) {
+      count += 1;
+    }
+  });
+
+  return count;
+}
+
+function countPendingIndicators(root) {
+  let count = 0;
+
+  walk(root, (node) => {
+    if (node.nodeType === 1 && node.getAttribute("data-pbt-control") === "translation-pending") {
       count += 1;
     }
   });

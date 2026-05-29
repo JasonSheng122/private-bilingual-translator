@@ -57,10 +57,20 @@
     "KBD",
     "SAMP",
     "NOSCRIPT",
+    "BUTTON",
     "SVG",
     "CANVAS",
     "MATH",
     "IFRAME"
+  ]);
+  const INTERACTIVE_TEXT_EXCLUDED_ROLES = new Set([
+    "button",
+    "checkbox",
+    "menuitem",
+    "option",
+    "radio",
+    "switch",
+    "tab"
   ]);
   const IDENTITY_ATTRIBUTE_NAMES = [
     "data-testid",
@@ -79,6 +89,11 @@
   const AUTHOR_ITEMPROP_PATTERN = /(^|[^a-z0-9])(author|creator)([^a-z0-9]|$)/i;
   const SOCIAL_HANDLE_PATTERN = /^@[\w.-]{1,64}(?:\s*[·•]\s*(?:now|\d+[smhdwy]))?$/i;
   const EXPLICIT_ID_PATTERN = /^(?:id|uid|user\s*id|account\s*id|用户\s*id|账号\s*id)\s*[:#]?\s*[a-z0-9_-]{2,80}$/i;
+  const TRANSIENT_OVERLAY_ROLES = new Set(["tooltip", "menu", "listbox"]);
+  const TRANSIENT_OVERLAY_DATA_ATTRIBUTE_NAMES = ["data-testid", "data-test-id"];
+  const TRANSIENT_OVERLAY_UI_ATTRIBUTE_NAMES = ["class", "id"];
+  const TRANSIENT_OVERLAY_DATA_PATTERN = /(^|[^a-z0-9])(hover[-_ ]?card|profile[-_ ]?card|user[-_ ]?card|tooltip|popover|popper|tippy|dropdown|flyout)([^a-z0-9]|$)/i;
+  const TRANSIENT_OVERLAY_UI_PATTERN = /(^|[^a-z0-9])(hover[-_ ]?card|tooltip|popover|popper|tippy|dropdown|flyout)([^a-z0-9]|$)/i;
   const SOCIAL_HOST_PATTERN = /(^|\.)((x|twitter|instagram|threads|facebook|linkedin|tiktok|reddit)\.com|bsky\.app|mastodon\.social)$/i;
   const NON_PROFILE_SOCIAL_PATHS = new Set([
     "about",
@@ -97,6 +112,7 @@
   ]);
   const state = {
     nextSegmentId: 1,
+    pendingTranslationIndicators: new Map(),
     textNodesById: new Map(),
     textNodeCollectionIds: new WeakMap(),
     replacedTextNodes: new Map(),
@@ -132,6 +148,7 @@
   function collectSegments(doc, options = {}) {
     const currentDocument = doc || root.document;
     const incremental = options.incremental === true;
+    const showPendingIndicators = options.showPendingIndicators === true;
     const segments = [];
 
     cleanupStaleReplacedEntries();
@@ -162,6 +179,9 @@
       state.nextSegmentId += 1;
       state.textNodesById.set(id, { textNode, sourceText: text });
       state.textNodeCollectionIds.set(textNode, { id, sourceText: text });
+      if (showPendingIndicators) {
+        attachPendingTranslationIndicator(id, textNode);
+      }
       segments.push({ id, text });
     });
 
@@ -331,6 +351,7 @@
     state.textNodesById.delete(id);
 
     if (!entry?.textNode) {
+      removePendingTranslationIndicator(id);
       return;
     }
 
@@ -339,6 +360,88 @@
     if (activeEntry?.id === id) {
       state.textNodeCollectionIds.delete(entry.textNode);
     }
+
+    removePendingTranslationIndicator(id);
+  }
+
+  function attachPendingTranslationIndicator(id, textNode) {
+    const parent = textNode?.parentElement ?? null;
+
+    if (!id || !parent || typeof parent.insertBefore !== "function") {
+      return;
+    }
+
+    const doc = parent.ownerDocument;
+
+    if (!doc || typeof doc.createElement !== "function") {
+      return;
+    }
+
+    removePendingTranslationIndicator(id);
+    ensurePendingTranslationIndicatorStyle(doc);
+
+    const indicator = createPendingTranslationIndicator(doc, id);
+    parent.insertBefore(indicator, textNode.nextSibling);
+    state.pendingTranslationIndicators.set(id, indicator);
+  }
+
+  function removePendingTranslationIndicator(id) {
+    const indicator = state.pendingTranslationIndicators.get(id);
+    state.pendingTranslationIndicators.delete(id);
+
+    if (indicator && typeof indicator.remove === "function") {
+      indicator.remove();
+    }
+  }
+
+  function clearPendingTranslationIndicators() {
+    for (const id of Array.from(state.pendingTranslationIndicators.keys())) {
+      removePendingTranslationIndicator(id);
+    }
+  }
+
+  function ensurePendingTranslationIndicatorStyle(doc) {
+    if (!doc || typeof doc.createElement !== "function") {
+      return;
+    }
+
+    const rootElement = doc.head || doc.documentElement || doc.body;
+
+    if (!rootElement || typeof rootElement.appendChild !== "function") {
+      return;
+    }
+
+    if (typeof rootElement.querySelector === "function" && rootElement.querySelector('[data-pbt-control="pending-indicator-style"]')) {
+      return;
+    }
+
+    const style = doc.createElement("style");
+    style.setAttribute("data-pbt-control", "pending-indicator-style");
+    style.textContent = "@keyframes pbt-spinner-rotate { to { transform: rotate(360deg); } }";
+    rootElement.appendChild(style);
+  }
+
+  function createPendingTranslationIndicator(doc, segmentId) {
+    const indicator = doc.createElement("span");
+    indicator.setAttribute("data-pbt-control", "translation-pending");
+    indicator.setAttribute("data-pbt-segment-id", segmentId);
+    indicator.setAttribute("aria-hidden", "true");
+    indicator.setAttribute("title", "正在翻译");
+    setStyles(indicator, {
+      display: "inline-flex",
+      alignItems: "center",
+      justifyContent: "center",
+      width: "18px",
+      height: "18px",
+      marginLeft: "6px",
+      verticalAlign: "-3px",
+      borderRadius: "999px",
+      background: "rgba(255, 255, 255, 0.92)",
+      boxShadow: "0 3px 9px rgba(15, 23, 42, 0.16)",
+      pointerEvents: "none"
+    });
+    indicator.appendChild(createFloatingSpinner(doc, "translation-pending-spinner", "12px", "#ec4899"));
+    return indicator;
   }
 
   function isCollectedTextEntryCurrent(entry) {
@@ -585,7 +688,7 @@
 
     state.floatingAutoTranslateTimer = null;
     state.floatingAutoTranslateSettleTimer = null;
-    updateFloatingProgressVisibility();
+    updatePendingTranslationIndicators();
   }
 
   function removeBilingualTranslations() {
@@ -693,7 +796,15 @@
       return true;
     }
 
+    if (isInteractiveTextControlElement(element)) {
+      return true;
+    }
+
     if (element.hasAttribute("data-pbt-translation") || element.hasAttribute("data-pbt-control")) {
+      return true;
+    }
+
+    if (isTransientOverlayElement(element)) {
       return true;
     }
 
@@ -1009,6 +1120,44 @@
     return false;
   }
 
+  function isTransientOverlayElement(element) {
+    if (!element || typeof element.getAttribute !== "function") {
+      return false;
+    }
+
+    const role = normalizeAttributeValue(element.getAttribute("role")).toLowerCase();
+
+    if (TRANSIENT_OVERLAY_ROLES.has(role)) {
+      return true;
+    }
+
+    if (typeof element.hasAttribute === "function" && (
+      element.hasAttribute("popover") ||
+      element.hasAttribute("data-popper-placement") ||
+      element.hasAttribute("data-tippy-root")
+    )) {
+      return true;
+    }
+
+    for (const name of TRANSIENT_OVERLAY_DATA_ATTRIBUTE_NAMES) {
+      if (TRANSIENT_OVERLAY_DATA_PATTERN.test(normalizeAttributeValue(element.getAttribute(name)))) {
+        return true;
+      }
+    }
+
+    for (const name of TRANSIENT_OVERLAY_UI_ATTRIBUTE_NAMES) {
+      if (TRANSIENT_OVERLAY_UI_PATTERN.test(normalizeAttributeValue(element.getAttribute(name)))) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  function normalizeAttributeValue(value) {
+    return String(value ?? "").trim();
+  }
+
   function isSocialProfileLinkElement(element) {
     if (!element || getElementTagName(element) !== "A" || typeof element.getAttribute !== "function") {
       return false;
@@ -1060,12 +1209,35 @@
       return false;
     }
 
+    if (isCompactMetricText(normalized) || isBareUrlLikeText(normalized)) {
+      return true;
+    }
+
     const stripped = normalized
       .replace(/\s+/g, "")
       .replace(/[$€£¥₩₹₽₺₫₴₪₦₱฿₡₲₵₭₮₸₼₾]/g, "")
       .replace(/[+\-−–—~≈=<>()[\]{}%‰,.'’:_/\\]/g, "");
 
     return /^\d+$/.test(stripped);
+  }
+
+  function isCompactMetricText(value) {
+    const compact = String(value ?? "").replace(/\s+/g, "").replace(/,/g, "");
+    return /^[+-]?(?:\d+(?:\.\d+)?|\.\d+)[KMBT]$/i.test(compact);
+  }
+
+  function isBareUrlLikeText(value) {
+    const normalized = String(value ?? "").trim();
+    return /^https?:\/\/\S+$/i.test(normalized) ||
+      /^(?:www\.)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+(?:\/\S*)?$/i.test(normalized);
+  }
+
+  function isInteractiveTextControlElement(element) {
+    if (!element || typeof element.getAttribute !== "function") {
+      return false;
+    }
+
+    return INTERACTIVE_TEXT_EXCLUDED_ROLES.has(normalizeAttributeValue(element.getAttribute("role")).toLowerCase());
   }
 
   function hasExcludedElementInAncestry(element) {
@@ -1128,7 +1300,6 @@
     bindFloatingContentObserver(doc);
     shell.appendChild(createFloatingLoadingStyle(doc));
     shell.appendChild(createSettingsPanel(doc));
-    shell.appendChild(createFloatingProgress(doc));
 
     const rail = doc.createElement("div");
     rail.setAttribute("data-pbt-control", "floating-rail");
@@ -1328,47 +1499,11 @@
     const style = doc.createElement("style");
     style.setAttribute("data-pbt-control", "floating-style");
     style.textContent = [
-      "@keyframes pbt-floating-dot-wave {",
-      "0%, 80%, 100% { transform: translateY(0); opacity: 0.52; }",
-      "40% { transform: translateY(-5px); opacity: 1; }",
-      "}",
-      "@keyframes pbt-floating-status-pulse {",
-      "0%, 100% { opacity: 0.78; }",
-      "50% { opacity: 1; }",
+      "@keyframes pbt-spinner-rotate {",
+      "to { transform: rotate(360deg); }",
       "}"
     ].join("\n");
     return style;
-  }
-
-  function createFloatingProgress(doc) {
-    const progress = doc.createElement("div");
-    progress.setAttribute("data-pbt-control", "translate-progress");
-    progress.setAttribute("role", "status");
-    progress.setAttribute("aria-live", "polite");
-    setStyles(progress, {
-      display: "none",
-      alignItems: "center",
-      justifyContent: "center",
-      gap: "5px",
-      width: "138px",
-      minHeight: "38px",
-      padding: "0 12px",
-      border: "1px solid rgba(236, 72, 153, 0.28)",
-      borderRadius: "999px",
-      background: "rgba(255, 255, 255, 0.98)",
-      color: "#9d174d",
-      boxShadow: "0 10px 24px rgba(15, 23, 42, 0.16)",
-      boxSizing: "border-box",
-      font: "800 12px/1.2 system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-      whiteSpace: "nowrap",
-      animation: "pbt-floating-status-pulse 1100ms ease-in-out infinite"
-    });
-
-    const label = doc.createElement("span");
-    label.textContent = "正在翻译，请稍等";
-    progress.appendChild(label);
-    progress.appendChild(createFloatingWaveDots(doc));
-    return progress;
   }
 
   function createIconButton(doc, text, control, label, primary) {
@@ -1650,61 +1785,54 @@
 
     const doc = button.ownerDocument;
     button.textContent = "";
-    button.appendChild(createFloatingWaveDots(doc, "translate-loading"));
+    button.appendChild(createFloatingSpinner(doc, "translate-loading", "18px", "#ffffff"));
     button.setAttribute("aria-label", "正在翻译当前网址");
     button.setAttribute("title", "正在翻译当前网址");
   }
 
-  function createFloatingWaveDots(doc, control = "") {
-    const dots = doc.createElement("span");
-    dots.setAttribute("aria-hidden", "true");
+  function createFloatingSpinner(doc, control = "", size = "16px", color = "#ec4899") {
+    const spinner = doc.createElement("span");
+    spinner.setAttribute("aria-hidden", "true");
 
     if (control) {
-      dots.setAttribute("data-pbt-control", control);
+      spinner.setAttribute("data-pbt-control", control);
     }
 
-    setStyles(dots, {
-      display: "inline-flex",
-      alignItems: "center",
-      justifyContent: "center",
-      gap: "2px",
-      height: "14px"
+    setStyles(spinner, {
+      display: "inline-block",
+      width: size,
+      height: size,
+      border: `2px solid ${color}`,
+      borderTopColor: "transparent",
+      borderRadius: "999px",
+      boxSizing: "border-box",
+      animation: "pbt-spinner-rotate 680ms linear infinite"
     });
 
-    for (let index = 0; index < 3; index += 1) {
-      const dot = doc.createElement("span");
-      dot.textContent = ".";
-      setStyles(dot, {
-        display: "inline-block",
-        lineHeight: "1",
-        animation: "pbt-floating-dot-wave 720ms ease-in-out infinite",
-        animationDelay: `${index * 120}ms`
-      });
-      dots.appendChild(dot);
-    }
-
-    return dots;
+    return spinner;
   }
 
   function setFloatingManualTranslateInFlight(inFlight) {
     state.floatingManualTranslateInFlight = inFlight === true;
-    updateFloatingProgressVisibility();
+    updatePendingTranslationIndicators();
   }
 
-  function updateFloatingProgressVisibility() {
+  function updatePendingTranslationIndicators() {
     if (!state.floatingPanel || typeof state.floatingPanel.querySelector !== "function") {
       return;
     }
 
-    const progress = state.floatingPanel.querySelector('[data-pbt-control="translate-progress"]');
-
-    if (progress) {
-      progress.style.display = shouldShowFloatingProgress() ? "inline-flex" : "none";
-    }
+    clearPendingTranslationIndicatorsIfIdle();
   }
 
-  function shouldShowFloatingProgress() {
+  function hasFloatingTranslationInFlight() {
     return state.floatingManualTranslateInFlight || state.floatingAutoTranslateProgressIds.size > 0;
+  }
+
+  function clearPendingTranslationIndicatorsIfIdle() {
+    if (!hasFloatingTranslationInFlight()) {
+      clearPendingTranslationIndicators();
+    }
   }
 
   function scheduleAfterFloatingPaint(callback) {
@@ -1946,7 +2074,15 @@
       return true;
     }
 
+    if (isInteractiveTextControlElement(element)) {
+      return true;
+    }
+
     if (element.hasAttribute("data-pbt-translation") || element.hasAttribute("data-pbt-control")) {
+      return true;
+    }
+
+    if (isTransientOverlayElement(element)) {
       return true;
     }
 
@@ -2183,7 +2319,7 @@
     state.floatingAutoTranslateInFlightCount += 1;
     state.floatingAutoTranslateInFlight = state.floatingAutoTranslateInFlightCount > 0;
     state.floatingAutoTranslateProgressIds.add(requestId);
-    updateFloatingProgressVisibility();
+    updatePendingTranslationIndicators();
     return requestId;
   }
 
@@ -2195,7 +2331,7 @@
       state.floatingAutoTranslateProgressIds.delete(requestId);
     }
 
-    updateFloatingProgressVisibility();
+    updatePendingTranslationIndicators();
   }
 
   function flushPendingFloatingAutoTranslate() {
@@ -2534,7 +2670,10 @@
       }
 
       if (message.type === MESSAGE_TYPES.COLLECT_SEGMENTS) {
-        sendResponse(api.collectSegments(null, { incremental: message.incremental === true }));
+        sendResponse(api.collectSegments(null, {
+          incremental: message.incremental === true,
+          showPendingIndicators: message.showPendingIndicators === true
+        }));
         return true;
       }
 

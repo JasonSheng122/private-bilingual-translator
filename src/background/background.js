@@ -245,7 +245,8 @@ async function translatePage(message, sender = {}) {
 
   const collectResult = await sendTabMessage(tabId, {
     type: MESSAGE_TYPES.COLLECT_SEGMENTS,
-    incremental
+    incremental,
+    showPendingIndicators: fromContentScript
   });
 
   if (!collectResult.ok || collectResult.segments.length === 0) {

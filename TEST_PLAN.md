@@ -81,6 +81,9 @@
 14. 社交媒体用户名称、`@handle` 和用户 ID。
 15. SVG/diagram namespace 中小写 `svg`、`text` 等 tagName 的文本也必须被排除。
 16. 已翻译出的目标语中文文本不应再次进入 collect，避免再次点击翻译时把译文当作原文。
+17. hover card、tooltip、popover 等临时浮层文本不进入 collect，避免鼠标悬停 UI 被当作正文。
+18. button、`role="button"` 等交互控件文本不进入 collect，避免页面按钮旁显示 pending spinner。
+19. `2.4K`、`453.6K`、`18M` 这类 compact 统计数字和 `b00kd.com` 这类裸 URL/域名不进入 collect。
 
 ## renderer 测试
 
@@ -191,9 +194,11 @@
 17. content script 对 SPA/tab 可见内容变化的自动增量翻译 debounce 应保持短延迟，避免插件侧额外等待明显拖慢用户切换。
 18. content script 在 `restorePage` 或 `prepareTranslation` 时会失效旧 collected segment，确保旧增量响应不能在用户还原或重翻译后落地。
 19. 右侧 `translate` 动作可以延后一帧以绘制等待态；点击带绿色勾选的 `译` 触发的 `restore` 动作必须立即发送内部消息，不新增 `requestAnimationFrame` callback。
-20. content script 自动增量翻译 in-flight 时会显示右侧“正在翻译，请稍等”状态条；多个自动增量请求并发时，最后一个请求完成后才隐藏。
+20. content script 自动增量翻译 in-flight 时，会在新增原文旁显示小型 spinner；多个自动增量请求并发时，请求全部结束后清理剩余 spinner，右侧不显示“正在翻译，请稍等”文字状态条。
 21. content script 对 hidden/未稳定 SPA tab 新内容执行有限 settle 重扫：首次 collect 无文本时，内容变可见后仍能补翻；同批 mutation 里即使已有可见导航/目录小块触发了短 debounce，hidden 主正文仍要保留一次 settle 补扫；正常可见新增正文不因此重复发 provider 请求。
 22. content script 对网站自带中文页面执行自动翻译暂停：`html lang="zh..."`、URL locale 或保守中文占比命中时，stored auto translate 和自动增量翻译不应发送 `PBT_TRANSLATE_PAGE`，右侧按钮显示 `译` 且无绿色勾选，暂停状态不能在每次 mutation 中反复改写插件浮窗。
+23. content script 对 hover card、tooltip、popover 等临时浮层不触发自动增量翻译，也不显示原文旁 spinner；普通 SPA/tab 新正文仍按短 debounce 和有限 settle 补翻。
+24. content script 在 Twitter/X、Reddit 等社交/内容流页面已翻译后，对滚动或动态加载产生的新增可见正文触发自动增量翻译，并在新增正文原文旁显示小型 spinner；hover card、tooltip、popover 等临时浮层、互动按钮、统计数字和裸域名仍不触发自动增量翻译，也不显示 spinner。
 
 ## 第三层：手动浏览器测试
 
@@ -238,8 +243,8 @@
 15. 已翻译后切换双语/直接显示模式，确认页面自动先回到原文再按新显示模式重新翻译，不需要再点击 `译`，且不提示 `No translated text was rendered`。
 16. 主按钮文字始终显示 `译`；成功翻译后只在按钮左下角显示绿色勾选，不改成 `原`。
 17. 在设置未变化时点击带绿色勾选的 `译`，确认页面还原成原文、绿色勾选消失，且当前网址默认翻译启用态取消。
-17.1. 点击未勾选的 `译` 后，在请求返回前确认按钮显示上下波动的三点加载态，并显示“正在翻译，请稍等”状态条；请求结束后状态条消失，按钮恢复为带或不带绿色勾选的 `译`。
-17.2. 点击带绿色勾选的 `译` 时确认原文立即恢复，不显示“正在翻译，请稍等”，也不需要等待下一帧或再次点击。
+17.1. 点击未勾选的 `译` 后，在请求返回前确认按钮显示 spinner，待翻译原文旁显示小型 spinner，右侧不显示“正在翻译，请稍等”状态条；请求结束后 spinner 消失，按钮恢复为带或不带绿色勾选的 `译`。
+17.2. 点击带绿色勾选的 `译` 时确认原文立即恢复，不显示右侧等待状态条，也不需要等待下一帧或再次点击。
 18. 点击网页自身的展开、折叠、详情或更多按钮，让原本隐藏的正文变为可见。
 19. 确认新增可见正文继续触发翻译。
 20. 确认闭合 `<details>` 内正文不会在打开前提前翻译，打开后才翻译。
@@ -259,7 +264,7 @@
 32. 使用自然版/深度版但未保存自定义 provider Key 或 Key 被拒绝时，确认右侧按钮显示 `!`，hover 能看到净化后的错误原因。
 33. 使用深度版时，如果 provider 返回等于原文的内容，popup 或右侧按钮不显示 `Translated n item(s).` 假成功。
 34. 在自然版或深度版翻译请求尚未返回时切换站内 tab，确认新 tab 正文无需等待旧请求结束即可尽快发起增量补翻，且并发请求不超过 2 个。
-34.1. 切换站内 tab 触发自动增量补翻时，确认右侧出现“正在翻译，请稍等”；如果连续触发多个补翻，请求全部结束后状态条才消失。
+34.1. 切换站内 tab 触发自动增量补翻时，确认新增原文旁出现小型 spinner，右侧不出现“正在翻译，请稍等”；如果连续触发多个补翻，请求全部结束后 spinner 才全部消失。
 34.2. 切换到某些先出现 hidden/空容器再显示正文的 tab 时，等待约半秒后确认中间正文和右侧目录继续补翻，不长期停在英文原文；如果左侧/右侧目录先变成可见文本，主正文仍必须在 settle 后补翻。
 35. 在双语模式下切换会复用 text node 的 SPA tab，确认旧译文消失，新正文重新出现对应译文，旧 provider 响应不会渲染到新正文上。
 36. 免费版翻译后再次点击翻译时，确认已是中文的译文不会被当作新原文发送，也不会提示 `No translated text was rendered`。
@@ -271,6 +276,9 @@
 42. 在 popup 中保存当前付费供应商的 Key 后，关闭右侧 `设` 再重新打开，确认内嵌配置页显示 Key 已保存，而不是旧的未保存状态。
 43. 在普通文档站开启当前 origin 自动翻译后，切到网站自带中文版本 `/zh/` 或 `/zh-cn/`，确认页面不再自动翻译、Network 不新增 provider 请求、右侧按钮显示 `译` 且无绿色勾选，网页自身导航和点击不被卡住。
 44. 在同一多语言站点从中文版本切回英文 lecture 页面，确认 origin 级自动翻译偏好没有被清除，仍可按原偏好继续翻译英文页面。
+45. 在 Twitter/X 等社交页面已翻译后，把鼠标移动到不同评论者头像、用户名或评论区域，确认 hover card、tooltip、popover 不触发 Network provider 请求，也不出现原文旁 spinner。
+46. 在 Twitter/X 页面已翻译后，向下滚动并等待新增可见正文出现，确认会触发既有 provider 请求并自动补翻，新增正文原文旁 spinner 按自动增量请求生命周期显示和隐藏，右侧不出现文字状态条；互动按钮、`K/M` 统计数字和裸域名旁不出现 spinner。
+47. 在 Reddit 等社交/评论页面已翻译后，滚动到末尾或让页面加载更多评论，确认新增可见正文会触发既有 provider 请求并自动补翻，新增原文旁 spinner 会显示并消失；同时确认 hover card、tooltip、popover 不触发 Network provider 请求，也不出现 spinner。
 
 敏感页面测试：
 

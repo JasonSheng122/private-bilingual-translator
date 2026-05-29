@@ -142,6 +142,7 @@
 9. hidden 元素。
 10. aria-hidden 元素。
 11. iframe。
+12. hover card、tooltip、popover 等临时浮层。
 
 ## 显示模式审计
 
@@ -212,6 +213,7 @@
 13. 清除会话密钥。
 14. 清除本地密钥。
 15. 长页面付费警告。
+16. Twitter/X、Reddit 等社交/内容流页面翻译完成后继续滚动新增正文会自动增量翻译，新增正文原文旁显示小型 spinner，且 hover card、tooltip、popover、互动按钮、统计数字和裸域名不触发自动增量翻译或 spinner。
 
 ## 审计报告格式
 

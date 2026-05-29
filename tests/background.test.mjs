@@ -663,6 +663,7 @@ test("background accepts translate requests from content script sender tab", asy
     assert.equal(tabMessages[0].tabId, 9);
     assert.equal(tabMessages[0].message.type, MESSAGE_TYPES.PREPARE_TRANSLATION);
     assert.equal(tabMessages[1].message.type, MESSAGE_TYPES.COLLECT_SEGMENTS);
+    assert.equal(tabMessages[1].message.showPendingIndicators, true);
     assert.equal(tabMessages[2].message.translations[0].text, "你好");
   } finally {
     globalThis.chrome = originalChrome;
@@ -729,6 +730,7 @@ test("background skips restore prepare for incremental content script translatio
       MESSAGE_TYPES.RENDER_TRANSLATIONS
     ]);
     assert.equal(tabMessages[0].message.incremental, true);
+    assert.equal(tabMessages[0].message.showPendingIndicators, true);
     assert.equal(tabMessages[1].message.translations[0].text, "新段落");
   } finally {
     globalThis.chrome = originalChrome;
@@ -844,6 +846,7 @@ test("background ignores incremental flag from popup translation", async () => {
       MESSAGE_TYPES.RENDER_TRANSLATIONS
     ]);
     assert.equal(tabMessages[2].message.incremental, false);
+    assert.equal(tabMessages[2].message.showPendingIndicators, false);
   } finally {
     globalThis.chrome = originalChrome;
     globalThis.fetch = originalFetch;

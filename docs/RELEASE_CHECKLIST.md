@@ -71,6 +71,7 @@
 6. pre 没有被翻译。
 7. hidden 元素没有被翻译。
 8. iframe 第一版没有被翻译。
+9. hover card、tooltip、popover 等临时浮层没有被翻译。
 
 ## 功能检查
 
@@ -95,6 +96,8 @@
 19. 自然版/深度版 provider 返回 JSONL、编号行、Markdown table 或 OpenAI-compatible content array 时，不误报 invalid response。
 20. 深度版直接翻译成功后，页面发生 SPA 新内容、混合可见 shell + hidden 主正文或隐藏内容展开时，自动重翻译不会先把已有译文恢复成原文。
 21. 深度版长页面翻译速度可接受，默认 6 路并发不频繁触发 429，且复杂句能看到短 `（白话：...）` 说明；自然版不添加解释。
+22. Twitter/X 等页面中鼠标悬停产生的 hover card、tooltip、popover 不触发自动增量翻译，不显示原文旁 spinner，也不新增 provider 请求。
+23. Twitter/X、Reddit 等社交/内容流页面翻译完成后，继续滚动出现的新增可见正文会触发自动增量翻译，新增正文原文旁显示小型 spinner，完成后落地译文并移除 spinner；互动按钮、`K/M` 统计数字和裸域名旁不显示 spinner。
 
 ## 文档检查
 
