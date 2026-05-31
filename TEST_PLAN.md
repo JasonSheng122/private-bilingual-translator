@@ -109,7 +109,9 @@
 18. 手动完整翻译 collect 不应被未返回的自动增量请求占位跳过当前正文。
 19. 同一段落中存在 inline `code`、链接或加粗等子元素时，直接翻译必须能替换代码前后的所有普通 text node，不能因为父元素已标记 `data-pbt-replaced` 就跳过兄弟 text node。
 20. 点击还原原文或进入重翻译 prepare 后，旧的 pending incremental segment id 必须失效；旧 provider 响应晚到时不能把顶部导航、左侧目录或正文局部重新渲染成译文。
-21. 点击带绿色勾选的右侧 `译` 时，restore 动作不能走翻译等待态的一帧延迟调度；即使翻译动作为了绘制等待态延迟发送，取消勾选也必须立即发送 `PBT_RESTORE_PAGE` 并恢复原文。
+21. 点击还原原文或进入重翻译 prepare 后，页面会话译文缓存必须暂停复用；restore 产生的 characterData mutation 不能把刚恢复的英文再次翻回中文。
+22. 点击带绿色勾选的右侧 `译` 时，restore 动作不能走翻译等待态的一帧延迟调度；即使翻译动作为了绘制等待态延迟发送，取消勾选也必须立即发送 `PBT_RESTORE_PAGE` 并恢复原文。
+23. 如果页面 DOM 残留 `data-pbt-replaced` 但当前 content script 没有 active restore 快照，右侧按钮必须显示已翻译态；点击后发送 `PBT_RESTORE_PAGE`，调用 `location.reload()`，不得发送 `PBT_TRANSLATE_PAGE`。
 
 双语翻译：
 
@@ -168,7 +170,7 @@
 34. 自然版 prompt 必须禁止解释；深度版 prompt 必须对长句、抽象句、技术句或观点句要求可见的短 `（白话：...）` 说明。
 35. Gemini/custom Gemini-compatible/custom OpenAI-compatible provider 深度版长页面必须拆成较小延迟批次并默认使用 8 路并发请求，同时仍保持单段上限、endpoint 白名单和 segment 顺序。
 36. Gemini/custom Gemini-compatible/custom OpenAI-compatible provider 自然版/深度版目标批大小变化后，长页面分批测试仍必须覆盖批次上限、并发上限和顺序合并。
-37. 付费 provider 返回“英文原文 + 中文说明”或整段英文未翻译时，必须触发一次严格重试；重试后没有任何 segment 通过 output gate 时返回净化错误，不把该结果当成成功译文。
+37. 付费 provider 返回“英文原文 + 中文说明”或整段英文未翻译时，必须触发一次严格重试；retry request 只能包含未通过 output gate 的 segment，不能把同批已成功 segment 再次发送给 provider；重试后没有任何 segment 通过 output gate 时返回净化错误，不把该结果当成成功译文。
 38. 付费 provider 严格重试后只有部分 segment 仍未翻译时，必须跳过未通过门槛的 segment，保留已翻译 segment，并保持 segment 顺序。
 
 ## 第二层：集成测试
@@ -199,6 +201,10 @@
 22. content script 对网站自带中文页面执行自动翻译暂停：`html lang="zh..."`、URL locale 或保守中文占比命中时，stored auto translate 和自动增量翻译不应发送 `PBT_TRANSLATE_PAGE`，右侧按钮显示 `译` 且无绿色勾选，暂停状态不能在每次 mutation 中反复改写插件浮窗。
 23. content script 对 hover card、tooltip、popover 等临时浮层不触发自动增量翻译，也不显示原文旁 spinner；普通 SPA/tab 新正文仍按短 debounce 和有限 settle 补翻。
 24. content script 在 Twitter/X、Reddit 等社交/内容流页面已翻译后，对滚动或动态加载产生的新增可见正文触发自动增量翻译，并在新增正文原文旁显示小型 spinner；hover card、tooltip、popover 等临时浮层、互动按钮、统计数字和裸域名仍不触发自动增量翻译，也不显示 spinner。
+25. content script 在虚拟滚动重新挂载同一条已翻译正文，或页面框架移除双语译文 marker 时，应复用当前页面会话内译文，不重复发送 `PBT_TRANSLATE_PAGE`，不显示原文旁 spinner。
+26. content script 在 `restorePage`、`prepareTranslation` 或显式移除双语译文后，应暂停当前页面会话译文复用，直到下一次成功渲染新译文。
+27. background 收到 content script 增量 collect 返回 `cachedRenderedCount` 且无新 segments 时，应返回已翻译状态，不调用 provider，不发送 render 消息。
+28. content script 遇到 extension context invalidated 时，如果当前旧脚本仍有直接翻译快照，应先恢复已渲染文本并清理 `data-pbt-replaced`，再移除旧右侧 UI；如果只剩 orphan marker，应走 reload 兜底。
 
 ## 第三层：手动浏览器测试
 
@@ -245,6 +251,7 @@
 17. 在设置未变化时点击带绿色勾选的 `译`，确认页面还原成原文、绿色勾选消失，且当前网址默认翻译启用态取消。
 17.1. 点击未勾选的 `译` 后，在请求返回前确认按钮显示 spinner，待翻译原文旁显示小型 spinner，右侧不显示“正在翻译，请稍等”状态条；请求结束后 spinner 消失，按钮恢复为带或不带绿色勾选的 `译`。
 17.2. 点击带绿色勾选的 `译` 时确认原文立即恢复，不显示右侧等待状态条，也不需要等待下一帧或再次点击。
+17.3. 在扩展 reload 或旧 content script 状态丢失后，如果页面仍可见旧直翻中文残留，确认右侧 `译` 显示绿色勾选；点击后当前页面刷新并回到网站原文，且不会把中文残留再次翻译。
 18. 点击网页自身的展开、折叠、详情或更多按钮，让原本隐藏的正文变为可见。
 19. 确认新增可见正文继续触发翻译。
 20. 确认闭合 `<details>` 内正文不会在打开前提前翻译，打开后才翻译。
@@ -252,8 +259,8 @@
 22. 确认子页面默认使用上次的翻译质量、付费供应商和显示模式自动翻译。
 23. 再点击同一个带绿色勾选的翻译按钮还原。
 24. 确认绿色勾选消失，并且再次打开同一 origin 子页面时不再自动翻译。
-25. 点击隐藏按钮，确认按钮组收起到右侧把手。
-26. 点击右侧把手，确认按钮组重新显示。
+25. 点击隐藏按钮，确认当前页面按钮组收起到右侧把手，其他已打开普通网页也收起，后续打开的普通网页默认收起。
+26. 点击右侧把手，确认当前页面按钮组重新显示，其他已打开普通网页和后续打开的普通网页也恢复显示。
 27. 确认页面内不再显示独立的双语/直接切换、还原或移除按钮。
 28. 确认翻译执行，且按钮自身没有被翻译。
 28. 确认按钮文字居中，按钮不会明显遮挡正文。
@@ -272,13 +279,15 @@
 38. 在右侧 `设` 面板中选择自然版或深度版，确认内嵌配置面板是 `chrome-extension://` 来源的 iframe，并且网页脚本无法从父 DOM 读取其中的 API Key 输入值。
 39. 使用自然版或深度版翻译包含英文标题和英文正文的长页面，确认如果 provider 保留少量标题英文，正文已翻译内容仍能落地，不出现整页 `The translation provider returned untranslated text`。
 40. 在直接翻译模式下打开包含 inline `code` 的英文段落，确认代码前后的普通正文都变为中文，代码本身保持原样。
-41. 在自然版或深度版增量翻译可能仍在返回中的情况下点击带绿色勾选的右侧 `译`，确认顶部导航、左侧目录、右侧目录和中间正文都恢复原文，并且等待几秒后不会被旧响应重新翻回中文。
+41. 在自然版或深度版增量翻译可能仍在返回中的情况下点击带绿色勾选的右侧 `译`，确认顶部导航、左侧目录、右侧目录和中间正文都恢复原文，并且等待几秒后不会被旧响应或页面会话缓存重新翻回中文。
 42. 在 popup 中保存当前付费供应商的 Key 后，关闭右侧 `设` 再重新打开，确认内嵌配置页显示 Key 已保存，而不是旧的未保存状态。
 43. 在普通文档站开启当前 origin 自动翻译后，切到网站自带中文版本 `/zh/` 或 `/zh-cn/`，确认页面不再自动翻译、Network 不新增 provider 请求、右侧按钮显示 `译` 且无绿色勾选，网页自身导航和点击不被卡住。
 44. 在同一多语言站点从中文版本切回英文 lecture 页面，确认 origin 级自动翻译偏好没有被清除，仍可按原偏好继续翻译英文页面。
 45. 在 Twitter/X 等社交页面已翻译后，把鼠标移动到不同评论者头像、用户名或评论区域，确认 hover card、tooltip、popover 不触发 Network provider 请求，也不出现原文旁 spinner。
 46. 在 Twitter/X 页面已翻译后，向下滚动并等待新增可见正文出现，确认会触发既有 provider 请求并自动补翻，新增正文原文旁 spinner 按自动增量请求生命周期显示和隐藏，右侧不出现文字状态条；互动按钮、`K/M` 统计数字和裸域名旁不出现 spinner。
 47. 在 Reddit 等社交/评论页面已翻译后，滚动到末尾或让页面加载更多评论，确认新增可见正文会触发既有 provider 请求并自动补翻，新增原文旁 spinner 会显示并消失；同时确认 hover card、tooltip、popover 不触发 Network provider 请求，也不出现 spinner。
+48. 在 Twitter/X 或 Reddit 评论流已翻译后，向上滚动回到刚才已经翻译过的评论，确认同一条正文不会再次触发 provider 请求，也不会再次显示 spinner；如果页面框架临时移除了译文 marker，插件只在当前页面会话内补回译文。
+49. 在 Twitter/X 页面翻译完成后点击带绿色勾选的 `译` 取消翻译，确认左侧导航列表、左下角账号区域和当前正文都保持原文，不被会话缓存重新翻成中文。
 
 敏感页面测试：
 
@@ -323,7 +332,7 @@
 7. 确认该子页面默认自动翻译，并沿用上次的翻译质量、付费供应商和显示模式。
 8. 再点击带绿色勾选的右侧翻译按钮还原，确认绿色勾选消失，且同一 origin 后续页面不再自动翻译。
 9. 在 DevTools Application 面板确认只保存 origin、显示模式枚举、翻译质量枚举、付费供应商枚举和自动翻译布尔值，不保存完整 URL、网页原文或译文正文。
-10. 在 DevTools Application 面板确认跨网站默认值只保存显示模式、翻译质量和付费供应商三个枚举，不保存完整 URL、网页原文、译文正文或 API Key。
+10. 在 DevTools Application 面板确认跨网站默认值只保存显示模式、翻译质量、付费供应商三个枚举和右侧控制入口隐藏布尔值，不保存完整 URL、网页原文、译文正文或 API Key。
 
 ## 第四层：运行时网络审计
 

@@ -10,6 +10,7 @@ import {
 } from "../shared/custom-provider-config.mjs";
 import {
   filterTranslatedPaidOutput,
+  getUnacceptedPaidOutputSegments,
   mergePaidOutputTranslations
 } from "./paid-translation-output.mjs";
 
@@ -81,6 +82,8 @@ export async function translateWithCustomOpenAiProvider(segments, options = {}) 
   const batchResult = await runCustomOpenAiBatches(fetchImpl, batches, {
     endpoint,
     apiKey,
+    qualityMode,
+    providerConfig,
     maxConcurrentRequests
   });
 
@@ -229,7 +232,7 @@ function buildCustomOpenAiPrompt(segments, qualityMode, { retry = false } = {}) 
   ].filter(Boolean).join("\n");
 }
 
-async function runCustomOpenAiBatches(fetchImpl, batches, { endpoint, apiKey, maxConcurrentRequests }) {
+async function runCustomOpenAiBatches(fetchImpl, batches, { endpoint, apiKey, qualityMode, providerConfig, maxConcurrentRequests }) {
   const translationsByBatch = new Array(batches.length);
   let nextBatchIndex = 0;
   let firstError = null;
@@ -265,10 +268,17 @@ async function runCustomOpenAiBatches(fetchImpl, batches, { endpoint, apiKey, ma
           continue;
         }
 
+        const retrySegments = getUnacceptedPaidOutputSegments(batch.segments, output.translations);
+
+        if (retrySegments.length === 0) {
+          translationsByBatch[batchIndex] = output.translations;
+          continue;
+        }
+
         const retryResponse = await requestCustomOpenAiTranslation(fetchImpl, {
           endpoint,
           apiKey,
-          requestJson: batch.retryRequestJson
+          requestJson: buildCustomOpenAiRequestPair(retrySegments, { qualityMode, providerConfig }).retryRequestJson
         });
 
         if (!retryResponse.ok) {
@@ -276,8 +286,8 @@ async function runCustomOpenAiBatches(fetchImpl, batches, { endpoint, apiKey, ma
           return;
         }
 
-        const retryTranslations = parseCustomOpenAiTranslations(retryResponse.text, batch.segments);
-        const retryOutput = filterTranslatedPaidOutput(retryTranslations, batch.segments);
+        const retryTranslations = parseCustomOpenAiTranslations(retryResponse.text, retrySegments);
+        const retryOutput = filterTranslatedPaidOutput(retryTranslations, retrySegments);
         const acceptedTranslations = mergePaidOutputTranslations(
           retryOutput.translations,
           output.translations,

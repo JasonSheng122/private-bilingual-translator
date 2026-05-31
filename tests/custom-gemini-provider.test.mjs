@@ -188,10 +188,14 @@ test("custom gemini provider keeps translated items when retry leaves one title 
   const calls = [];
   const fetchImpl = async (url, options) => {
     calls.push({ url, options });
-    const text = JSON.stringify([
-      { id: "title", text: titleText },
-      { id: "body", text: "你让一个 agent 搭建电商网站，但购物车里的结账按钮没有任何作用。" }
-    ]);
+    const text = calls.length === 1
+      ? JSON.stringify([
+        { id: "title", text: titleText },
+        { id: "body", text: "你让一个 agent 搭建电商网站，但购物车里的结账按钮没有任何作用。" }
+      ])
+      : JSON.stringify([
+        { id: "title", text: titleText }
+      ]);
 
     return {
       ok: true,
@@ -222,9 +226,13 @@ test("custom gemini provider keeps translated items when retry leaves one title 
       fetchImpl
     }
   );
+  const retryPrompt = JSON.parse(calls[1].options.body).contents[0].parts[0].text;
 
   assert.equal(result.ok, true);
   assert.equal(calls.length, 2);
+  assert.match(retryPrompt, /Retry instruction/);
+  assert.equal(retryPrompt.includes(titleText), true);
+  assert.equal(retryPrompt.includes(bodyText), false);
   assert.deepEqual(result.translations, [
     { id: "body", text: "你让一个 agent 搭建电商网站，但购物车里的结账按钮没有任何作用。" }
   ]);

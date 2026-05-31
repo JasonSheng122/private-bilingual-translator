@@ -54,6 +54,14 @@ export function mergePaidOutputTranslations(primaryTranslations, fallbackTransla
     .filter(Boolean);
 }
 
+export function getUnacceptedPaidOutputSegments(segments, acceptedTranslations) {
+  const acceptedIds = new Set(
+    Array.from(acceptedTranslations || [], (translation) => String(translation?.id ?? ""))
+  );
+
+  return Array.from(segments || []).filter((segment) => !acceptedIds.has(String(segment?.id ?? "")));
+}
+
 export function isUntranslatedPaidOutput(source, translated) {
   const sourceText = normalizeText(source);
   const translatedText = normalizeText(translated);

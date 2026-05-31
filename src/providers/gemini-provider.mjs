@@ -6,6 +6,7 @@ import {
 } from "./gemini-like-response-parser.mjs";
 import {
   filterTranslatedPaidOutput,
+  getUnacceptedPaidOutputSegments,
   mergePaidOutputTranslations
 } from "./paid-translation-output.mjs";
 
@@ -71,6 +72,7 @@ export async function translateWithGeminiProvider(segments, options = {}) {
   const batchResult = await runGeminiBatches(fetchImpl, batches, {
     endpoint,
     apiKey,
+    qualityMode,
     maxConcurrentRequests
   });
 
@@ -220,7 +222,7 @@ function buildGeminiPrompt(segments, qualityMode, { retry = false } = {}) {
   ].filter(Boolean).join("\n");
 }
 
-async function runGeminiBatches(fetchImpl, batches, { endpoint, apiKey, maxConcurrentRequests }) {
+async function runGeminiBatches(fetchImpl, batches, { endpoint, apiKey, qualityMode, maxConcurrentRequests }) {
   const translationsByBatch = new Array(batches.length);
   let nextBatchIndex = 0;
   let firstError = null;
@@ -256,10 +258,17 @@ async function runGeminiBatches(fetchImpl, batches, { endpoint, apiKey, maxConcu
           continue;
         }
 
+        const retrySegments = getUnacceptedPaidOutputSegments(batch.segments, output.translations);
+
+        if (retrySegments.length === 0) {
+          translationsByBatch[batchIndex] = output.translations;
+          continue;
+        }
+
         const retryResponse = await requestGeminiTranslation(fetchImpl, {
           endpoint,
           apiKey,
-          requestJson: batch.retryRequestJson
+          requestJson: buildGeminiRequestPair(retrySegments, { qualityMode }).retryRequestJson
         });
 
         if (!retryResponse.ok) {
@@ -267,8 +276,8 @@ async function runGeminiBatches(fetchImpl, batches, { endpoint, apiKey, maxConcu
           return;
         }
 
-        const retryTranslations = parseGeminiTranslations(retryResponse.text, batch.segments);
-        const retryOutput = filterTranslatedPaidOutput(retryTranslations, batch.segments);
+        const retryTranslations = parseGeminiTranslations(retryResponse.text, retrySegments);
+        const retryOutput = filterTranslatedPaidOutput(retryTranslations, retrySegments);
         const acceptedTranslations = mergePaidOutputTranslations(
           retryOutput.translations,
           output.translations,

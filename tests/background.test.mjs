@@ -267,6 +267,46 @@ test("background uses stored origin translation settings for page status", async
   }
 });
 
+test("background uses stored global floating hidden preference for page status", async () => {
+  const originalChrome = globalThis.chrome;
+  const sentMessages = [];
+
+  globalThis.chrome = {
+    runtime: { lastError: null },
+    storage: {
+      local: makeStorageArea({
+        pbt_site_settings_v1: {
+          floatingControlsHidden: true
+        }
+      })
+    },
+    tabs: {
+      sendMessage(tabId, message, callback) {
+        sentMessages.push({ tabId, message });
+        callback({ ok: true });
+      }
+    }
+  };
+
+  try {
+    const response = await routeMessage({
+      type: MESSAGE_TYPES.GET_PAGE_STATUS,
+      tabId: 7,
+      url: "https://example.com/article",
+      qualityMode: QUALITY_MODES.FREE,
+      displayMode: DISPLAY_MODES.BILINGUAL,
+      paidProvider: "gemini"
+    });
+
+    assert.equal(response.ok, true);
+    assert.equal(response.floatingControlsHidden, true);
+    const showMessage = sentMessages.find((entry) => entry.message.type === MESSAGE_TYPES.SHOW_FLOATING_TRANSLATE_BUTTON);
+    assert.equal(showMessage.message.floatingControlsHidden, true);
+  } finally {
+    globalThis.chrome = originalChrome;
+  }
+});
+
 test("background uses global translation defaults for other sites", async () => {
   const originalChrome = globalThis.chrome;
   const sentMessages = [];
@@ -319,6 +359,41 @@ test("background uses global translation defaults for other sites", async () => 
     assert.equal(showMessage.message.qualityMode, QUALITY_MODES.DEEP);
     assert.equal(showMessage.message.paidProvider, "custom_gemini");
     assert.equal(showMessage.message.autoTranslate, false);
+  } finally {
+    globalThis.chrome = originalChrome;
+  }
+});
+
+test("background stores global floating hidden preference", async () => {
+  const originalChrome = globalThis.chrome;
+  const storageArea = makeStorageArea();
+
+  globalThis.chrome = {
+    runtime: { lastError: null },
+    storage: {
+      local: storageArea
+    }
+  };
+
+  try {
+    const hidden = await routeMessage({
+      type: MESSAGE_TYPES.SET_FLOATING_CONTROLS_HIDDEN,
+      hidden: true
+    });
+    const shown = await routeMessage({
+      type: MESSAGE_TYPES.SET_FLOATING_CONTROLS_HIDDEN,
+      hidden: false
+    });
+
+    assert.deepEqual(hidden, {
+      ok: true,
+      floatingControlsHidden: true
+    });
+    assert.deepEqual(shown, {
+      ok: true,
+      floatingControlsHidden: false
+    });
+    assert.equal(storageArea.data.pbt_site_settings_v1.floatingControlsHidden, false);
   } finally {
     globalThis.chrome = originalChrome;
   }
@@ -732,6 +807,57 @@ test("background skips restore prepare for incremental content script translatio
     assert.equal(tabMessages[0].message.incremental, true);
     assert.equal(tabMessages[0].message.showPendingIndicators, true);
     assert.equal(tabMessages[1].message.translations[0].text, "新段落");
+  } finally {
+    globalThis.chrome = originalChrome;
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("background treats cached incremental render as translated without provider request", async () => {
+  const originalChrome = globalThis.chrome;
+  const originalFetch = globalThis.fetch;
+  const tabMessages = [];
+
+  globalThis.chrome = {
+    runtime: { lastError: null },
+    tabs: {
+      sendMessage(tabId, message, callback) {
+        tabMessages.push({ tabId, message });
+
+        if (message.type === MESSAGE_TYPES.COLLECT_SEGMENTS) {
+          callback({ ok: true, segments: [], cachedRenderedCount: 1 });
+          return;
+        }
+
+        callback({ ok: true, renderedCount: 1 });
+      }
+    }
+  };
+  globalThis.fetch = async () => {
+    throw new Error("provider should not be called for cached incremental render");
+  };
+
+  try {
+    const response = await routeMessage(
+      {
+        type: MESSAGE_TYPES.TRANSLATE_PAGE,
+        url: "https://example.com/article",
+        qualityMode: QUALITY_MODES.FREE,
+        displayMode: DISPLAY_MODES.BILINGUAL,
+        incremental: true
+      },
+      { tab: { id: 9, url: "https://example.com/article" } }
+    );
+
+    assert.equal(response.ok, true);
+    assert.equal(response.status, "bilingual");
+    assert.equal(response.segmentCount, 0);
+    assert.equal(response.renderedCount, 1);
+    assert.deepEqual(tabMessages.map((entry) => entry.message.type), [
+      MESSAGE_TYPES.COLLECT_SEGMENTS
+    ]);
+    assert.equal(tabMessages[0].message.incremental, true);
+    assert.equal(tabMessages[0].message.displayMode, DISPLAY_MODES.BILINGUAL);
   } finally {
     globalThis.chrome = originalChrome;
     globalThis.fetch = originalFetch;

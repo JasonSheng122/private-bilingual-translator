@@ -30,6 +30,7 @@
   const FLOATING_AUTO_TRANSLATE_DELAY_MS = 80;
   const FLOATING_AUTO_TRANSLATE_SETTLE_DELAY_MS = 400;
   const FLOATING_AUTO_TRANSLATE_MAX_IN_FLIGHT = 2;
+  const SESSION_TRANSLATION_CACHE_LIMIT = 600;
   const TARGET_LANGUAGE_SAMPLE_LIMIT = 2400;
   const TARGET_LANGUAGE_MIN_CJK_CHARS = 24;
   const TARGET_LANGUAGE_MIN_CJK_RATIO = 0.58;
@@ -45,8 +46,11 @@
     TRANSLATE_PAGE: "PBT_TRANSLATE_PAGE",
     SET_SITE_DISPLAY_MODE: "PBT_SET_SITE_DISPLAY_MODE",
     SET_SITE_TRANSLATION_SETTINGS: "PBT_SET_SITE_TRANSLATION_SETTINGS",
+    SET_FLOATING_CONTROLS_HIDDEN: "PBT_SET_FLOATING_CONTROLS_HIDDEN",
+    APPLY_FLOATING_CONTROLS_HIDDEN: "PBT_APPLY_FLOATING_CONTROLS_HIDDEN",
     OPEN_EXTENSION_POPUP: "PBT_OPEN_EXTENSION_POPUP"
   };
+  const FLOATING_CONTROLS_PORT_NAME = "pbt-floating-controls";
   const EXCLUDED_TAGS = new Set([
     "INPUT",
     "TEXTAREA",
@@ -113,6 +117,8 @@
   const state = {
     nextSegmentId: 1,
     pendingTranslationIndicators: new Map(),
+    sessionTranslationCache: new Map(),
+    sessionTranslationReuseSuspended: false,
     textNodesById: new Map(),
     textNodeCollectionIds: new WeakMap(),
     replacedTextNodes: new Map(),
@@ -127,6 +133,7 @@
     floatingTranslatedSettingsSignature: "",
     floatingSettingsOpen: false,
     floatingHidden: false,
+    floatingControlsPort: null,
     floatingOutsideClickBound: false,
     floatingObserver: null,
     floatingManualTranslateInFlight: false,
@@ -149,7 +156,9 @@
     const currentDocument = doc || root.document;
     const incremental = options.incremental === true;
     const showPendingIndicators = options.showPendingIndicators === true;
+    const displayMode = normalizeDisplayMode(options.displayMode ?? state.floatingDisplayMode);
     const segments = [];
+    let cachedRenderedCount = 0;
 
     cleanupStaleReplacedEntries();
     cleanupStaleBilingualEntries();
@@ -175,6 +184,11 @@
         return;
       }
 
+      if (incremental && !state.sessionTranslationReuseSuspended && renderCachedSessionTranslationForTextNode(textNode, text, displayMode)) {
+        cachedRenderedCount += 1;
+        return;
+      }
+
       const id = `pbt-segment-${state.nextSegmentId}`;
       state.nextSegmentId += 1;
       state.textNodesById.set(id, { textNode, sourceText: text });
@@ -185,7 +199,7 @@
       segments.push({ id, text });
     });
 
-    return { ok: true, segments };
+    return { ok: true, segments, cachedRenderedCount };
   }
 
   function renderTranslations({ displayMode, translations }) {
@@ -203,6 +217,7 @@
     }
 
     if (result.ok && result.renderedCount > 0) {
+      resumeSessionTranslationReuse();
       setFloatingTranslated(true);
     }
 
@@ -210,6 +225,7 @@
   }
 
   function prepareTranslation({ displayMode }) {
+    suspendSessionTranslationReuseUntilNextRender();
     invalidatePendingCollectedTranslations();
     cleanupStaleReplacedEntries();
 
@@ -257,6 +273,7 @@
       });
       textNode.nodeValue = translatedText;
       markReplaced(textNode.parentElement);
+      rememberSessionTranslation(DISPLAY_MODES.REPLACE, originalText, translatedText);
       deleteCollectedTextNode(translation.id);
       renderedCount += 1;
     }
@@ -293,6 +310,7 @@
         translationId: translation.id
       });
       state.bilingualTranslationNodes.set(translation.id, marker);
+      rememberSessionTranslation(DISPLAY_MODES.BILINGUAL, originalText, translatedText);
       deleteCollectedTextNode(translation.id);
       renderedCount += 1;
     }
@@ -442,6 +460,109 @@
     });
     indicator.appendChild(createFloatingSpinner(doc, "translation-pending-spinner", "12px", "#ec4899"));
     return indicator;
+  }
+
+  function rememberSessionTranslation(displayMode, sourceText, translatedText) {
+    const key = getSessionTranslationCacheKey(displayMode, sourceText);
+    const normalizedTranslatedText = String(translatedText ?? "");
+
+    if (!key || !normalizedTranslatedText) {
+      return;
+    }
+
+    if (state.sessionTranslationCache.has(key)) {
+      state.sessionTranslationCache.delete(key);
+    }
+
+    state.sessionTranslationCache.set(key, {
+      translatedText: normalizedTranslatedText
+    });
+
+    while (state.sessionTranslationCache.size > SESSION_TRANSLATION_CACHE_LIMIT) {
+      const oldestKey = state.sessionTranslationCache.keys().next().value;
+      state.sessionTranslationCache.delete(oldestKey);
+    }
+  }
+
+  function renderCachedSessionTranslationForTextNode(textNode, sourceText, displayMode = state.floatingDisplayMode) {
+    if (!textNode || !isTextNodeAllowed(textNode)) {
+      return false;
+    }
+
+    const cached = getSessionTranslation(displayMode, sourceText);
+
+    if (!cached) {
+      return false;
+    }
+
+    const originalText = String(textNode.nodeValue ?? "");
+    const translatedText = cached.translatedText;
+
+    if (!isMeaningfulTranslation(originalText, translatedText)) {
+      return false;
+    }
+
+    if (displayMode === DISPLAY_MODES.REPLACE) {
+      state.replacedTextNodes.set(textNode, {
+        originalText,
+        translatedText,
+        element: textNode.parentElement
+      });
+      textNode.nodeValue = translatedText;
+      markReplaced(textNode.parentElement);
+      setFloatingTranslated(true);
+      return true;
+    }
+
+    const parent = textNode.parentElement;
+
+    if (!parent || hasActiveBilingualTranslation(textNode)) {
+      return false;
+    }
+
+    const translationId = `pbt-session-cache-${state.nextSegmentId}`;
+    state.nextSegmentId += 1;
+    const marker = createTranslationNode(parent.ownerDocument, translationId, translatedText);
+    parent.insertBefore(marker, textNode.nextSibling);
+    state.bilingualTranslatedTextNodes.set(textNode, {
+      originalText,
+      marker,
+      translationId
+    });
+    state.bilingualTranslationNodes.set(translationId, marker);
+    setFloatingTranslated(true);
+    return true;
+  }
+
+  function getSessionTranslation(displayMode, sourceText) {
+    const key = getSessionTranslationCacheKey(displayMode, sourceText);
+    return key ? state.sessionTranslationCache.get(key) ?? null : null;
+  }
+
+  function getSessionTranslationCacheKey(displayMode, sourceText) {
+    const normalizedText = normalizeComparableText(sourceText);
+
+    if (!normalizedText) {
+      return "";
+    }
+
+    return [
+      getFloatingTranslationSettingsSignature(),
+      normalizeDisplayMode(displayMode),
+      hashSessionTranslationSource(normalizedText)
+    ].join("|");
+  }
+
+  function hashSessionTranslationSource(value) {
+    const normalized = normalizeComparableText(value);
+    let hash = 2166136261;
+
+    for (let index = 0; index < normalized.length; index += 1) {
+      hash ^= normalized.charCodeAt(index);
+      hash = Math.imul(hash, 16777619) >>> 0;
+    }
+
+    return `${normalized.length}:${hash.toString(36)}`;
   }
 
   function isCollectedTextEntryCurrent(entry) {
@@ -660,14 +781,23 @@
   }
 
   function restorePage() {
+    suspendSessionTranslationReuseUntilNextRender();
     invalidatePendingCollectedTranslations();
     const restored = restoreOriginalText();
     const removed = removeBilingualTranslations();
+    const orphanedReplaceMarkerCount = countOrphanedReplaceMarkers();
+    const reloadRequired = orphanedReplaceMarkerCount > 0;
+
+    if (reloadRequired) {
+      reloadPageForOrphanedReplaceMarkers();
+    }
 
     return {
       ok: true,
       restoredCount: restored.restoredCount,
-      removedCount: removed.removedCount
+      removedCount: removed.removedCount,
+      reloadRequired,
+      orphanedReplaceMarkerCount
     };
   }
 
@@ -692,6 +822,7 @@
   }
 
   function removeBilingualTranslations() {
+    suspendSessionTranslationReuseUntilNextRender();
     let removedCount = 0;
 
     for (const node of state.bilingualTranslationNodes.values()) {
@@ -731,7 +862,12 @@
       state.floatingStoredAutoTranslate = options.autoTranslate === true;
     }
 
+    if (hasOwn(options, "floatingControlsHidden")) {
+      state.floatingHidden = options.floatingControlsHidden === true;
+    }
+
     if (state.floatingPanel && state.floatingPanel.parentNode) {
+      syncFloatingTranslatedStateFromPage();
       updateFloatingPanelControls();
       maybeRunStoredAutoTranslate();
       return { ok: true, shown: false };
@@ -740,6 +876,7 @@
     const panel = createFloatingPanel(doc);
     doc.body.appendChild(panel);
     state.floatingPanel = panel;
+    syncFloatingTranslatedStateFromPage();
     updateFloatingPanelControls();
     maybeRunStoredAutoTranslate();
 
@@ -1035,7 +1172,44 @@
   }
 
   function hasActiveRenderedTranslations() {
-    return state.replacedTextNodes.size > 0 || state.bilingualTranslationNodes.size > 0;
+    return state.replacedTextNodes.size > 0 ||
+      state.bilingualTranslationNodes.size > 0 ||
+      hasOrphanedReplaceMarkers();
+  }
+
+  function hasOrphanedReplaceMarkers() {
+    return countOrphanedReplaceMarkers() > 0;
+  }
+
+  function countOrphanedReplaceMarkers(node = root.document?.body ?? null) {
+    if (!node) {
+      return 0;
+    }
+
+    let count = 0;
+
+    if (
+      node.nodeType === ELEMENT_NODE &&
+      typeof node.hasAttribute === "function" &&
+      node.hasAttribute("data-pbt-replaced") &&
+      !hasActiveReplaceEntryForElement(node)
+    ) {
+      count += 1;
+    }
+
+    for (const child of Array.from(node.childNodes || [])) {
+      count += countOrphanedReplaceMarkers(child);
+    }
+
+    return count;
+  }
+
+  function reloadPageForOrphanedReplaceMarkers() {
+    const reload = root.location?.reload;
+
+    if (typeof reload === "function") {
+      reload.call(root.location);
+    }
   }
 
   function isMeaningfulTranslation(originalText, translatedText) {
@@ -1340,7 +1514,7 @@
       boxSizing: "border-box"
     });
     handle.addEventListener("click", () => {
-      setFloatingHidden(false);
+      setFloatingHidden(false, { persist: true });
     });
 
     shell.appendChild(rail);
@@ -1546,7 +1720,7 @@
 
     if (control === "hide") {
       button.addEventListener("click", () => {
-        setFloatingHidden(true);
+        setFloatingHidden(true, { persist: true });
       });
     }
 
@@ -1956,11 +2130,15 @@
         maybeRunStoredAutoTranslate();
       }
 
+      if (shouldReuseSessionTranslationsForMutations(wasTranslated)) {
+        renderCachedSessionTranslationsForMutations(mutations);
+      }
       const shouldRetranslateStaleReplace = wasTranslated && staleReplaceCount > 0;
       const shouldRetranslateStaleBilingual = wasTranslated && staleBilingualCount > 0;
-      const shouldRetranslateStale = shouldRetranslateStaleReplace || shouldRetranslateStaleBilingual;
       const hasNewText = hasPotentialNewTextMutation(mutations);
       const hasSettlingText = hasPotentialSettlingTextMutation(mutations);
+      const shouldRetranslateStale = (shouldRetranslateStaleReplace || shouldRetranslateStaleBilingual) &&
+        hasNewText;
       const shouldSettleScan = hasSettlingText || (!hasNewText && shouldRetranslateStale);
       const shouldForceTranslate = shouldRetranslateStale ||
         (wasTranslated && !state.floatingTranslated) ||
@@ -1987,6 +2165,86 @@
       subtree: true,
       characterData: true
     });
+  }
+
+  function shouldReuseSessionTranslationsForMutations(wasTranslated) {
+    return Boolean(
+      !state.sessionTranslationReuseSuspended &&
+      (wasTranslated || state.floatingTranslated || state.floatingStoredAutoTranslate)
+    );
+  }
+
+  function suspendSessionTranslationReuseUntilNextRender() {
+    state.sessionTranslationReuseSuspended = true;
+  }
+
+  function resumeSessionTranslationReuse() {
+    state.sessionTranslationReuseSuspended = false;
+  }
+
+  function renderCachedSessionTranslationsForMutations(mutations) {
+    let renderedCount = 0;
+
+    for (const mutation of Array.from(mutations || [])) {
+      if (mutation?.type === "characterData") {
+        renderedCount += renderCachedSessionTranslationsInNode(mutation.target);
+        continue;
+      }
+
+      if (mutation?.type === "attributes" && isRevealAttributeMutation(mutation)) {
+        renderedCount += renderCachedSessionTranslationsInNode(mutation.target);
+        continue;
+      }
+
+      for (const node of Array.from(mutation?.addedNodes || [])) {
+        renderedCount += renderCachedSessionTranslationsInNode(node);
+      }
+
+      if (mutation?.type === "childList" && hasRemovedRenderedTranslation(mutation)) {
+        renderedCount += renderCachedSessionTranslationsInNode(mutation.target);
+      }
+    }
+
+    return renderedCount;
+  }
+
+  function renderCachedSessionTranslationsInNode(node) {
+    if (!node) {
+      return 0;
+    }
+
+    if (node.nodeType === TEXT_NODE) {
+      const text = normalizeText(node.nodeValue);
+      return text && renderCachedSessionTranslationForTextNode(node, text, state.floatingDisplayMode) ? 1 : 0;
+    }
+
+    if (node.nodeType !== ELEMENT_NODE || isElementExcluded(node)) {
+      return 0;
+    }
+
+    let renderedCount = 0;
+
+    for (const child of Array.from(node.childNodes || [])) {
+      renderedCount += renderCachedSessionTranslationsInNode(child);
+    }
+
+    return renderedCount;
+  }
+
+  function hasRemovedRenderedTranslation(mutation) {
+    return Array.from(mutation?.removedNodes || []).some((node) => containsRenderedTranslationNode(node));
+  }
+
+  function containsRenderedTranslationNode(node) {
+    if (!node) {
+      return false;
+    }
+
+    if (node.nodeType === ELEMENT_NODE && typeof node.hasAttribute === "function" && node.hasAttribute("data-pbt-translation")) {
+      return true;
+    }
+
+    return Array.from(node.childNodes || []).some((child) => containsRenderedTranslationNode(child));
   }
 
   function hasPotentialNewTextMutation(mutations) {
@@ -2349,7 +2607,7 @@
     updateFloatingPanelControls();
   }
 
-  function setFloatingHidden(hidden) {
+  function setFloatingHidden(hidden, options = {}) {
     state.floatingHidden = Boolean(hidden);
 
     if (state.floatingHidden) {
@@ -2357,6 +2615,21 @@
     }
 
     updateFloatingPanelControls();
+
+    if (options.persist === true) {
+      saveFloatingControlsHidden(state.floatingHidden);
+    }
+  }
+
+  function saveFloatingControlsHidden(hidden) {
+    sendRuntimeMessage({
+      type: MESSAGE_TYPES.SET_FLOATING_CONTROLS_HIDDEN,
+      hidden: hidden === true
+    }, (response) => {
+      if (response && response.ok && typeof response.floatingControlsHidden === "boolean") {
+        setFloatingHidden(response.floatingControlsHidden);
+      }
+    });
   }
 
   function saveFloatingTranslationSettings(autoTranslate) {
@@ -2412,7 +2685,8 @@
         qualityMode: response.qualityMode,
         displayMode: response.displayMode,
         paidProvider: response.paidProvider,
-        autoTranslate: response.autoTranslate
+        autoTranslate: response.autoTranslate,
+        floatingControlsHidden: response.floatingControlsHidden
       });
     });
   }
@@ -2463,6 +2737,55 @@
       handleRuntimeMessageFailure(error);
       return null;
     }
+  }
+
+  function connectFloatingControlsPort() {
+    const connect = getRuntimeConnect();
+
+    if (!connect || state.floatingControlsPort) {
+      return;
+    }
+
+    try {
+      const port = connect({ name: FLOATING_CONTROLS_PORT_NAME });
+      state.floatingControlsPort = port;
+
+      port.onMessage?.addListener?.((message) => {
+        applyFloatingControlsMessage(message);
+      });
+
+      port.onDisconnect?.addListener?.(() => {
+        state.floatingControlsPort = null;
+      });
+    } catch (error) {
+      handleRuntimeMessageFailure(error);
+    }
+  }
+
+  function getRuntimeConnect() {
+    if (state.floatingContextInvalidated) {
+      return null;
+    }
+
+    try {
+      if (!root.chrome || !root.chrome.runtime || typeof root.chrome.runtime.connect !== "function") {
+        return null;
+      }
+
+      return root.chrome.runtime.connect.bind(root.chrome.runtime);
+    } catch (error) {
+      handleRuntimeMessageFailure(error);
+      return null;
+    }
+  }
+
+  function applyFloatingControlsMessage(message) {
+    if (!message || message.type !== MESSAGE_TYPES.APPLY_FLOATING_CONTROLS_HIDDEN) {
+      return false;
+    }
+
+    setFloatingHidden(message.floatingControlsHidden === true);
+    return true;
   }
 
   function getFloatingProviderConfigUrl() {
@@ -2518,6 +2841,7 @@
       return;
     }
 
+    restorePage();
     state.floatingContextInvalidated = true;
     state.floatingAutoTranslateInFlight = false;
     state.floatingAutoTranslateInFlightCount = 0;
@@ -2622,7 +2946,18 @@
   }
 
   function updateFloatingTranslatedFromPageState() {
-    setFloatingTranslated(state.replacedTextNodes.size > 0 || state.bilingualTranslationNodes.size > 0);
+    syncFloatingTranslatedStateFromPage();
+    updateFloatingPanelControls();
+  }
+
+  function syncFloatingTranslatedStateFromPage() {
+    state.floatingTranslated = hasActiveRenderedTranslations();
+
+    if (state.floatingTranslated) {
+      state.floatingTranslatedSettingsSignature = getFloatingTranslationSettingsSignature();
+    } else {
+      state.floatingTranslatedSettingsSignature = "";
+    }
   }
 
   function hasFloatingTranslationSettingsChanged() {
@@ -2672,6 +3007,7 @@
       if (message.type === MESSAGE_TYPES.COLLECT_SEGMENTS) {
         sendResponse(api.collectSegments(null, {
           incremental: message.incremental === true,
+          displayMode: message.displayMode,
           showPendingIndicators: message.showPendingIndicators === true
         }));
         return true;
@@ -2707,9 +3043,15 @@
         return true;
       }
 
+      if (message.type === MESSAGE_TYPES.APPLY_FLOATING_CONTROLS_HIDDEN) {
+        sendResponse({ ok: applyFloatingControlsMessage(message) });
+        return true;
+      }
+
       return false;
     });
   }
 
+  connectFloatingControlsPort();
   requestAutoFloatingPanel();
 })(globalThis);

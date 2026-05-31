@@ -46,6 +46,15 @@ export async function getStoredTranslationSettingsForUrl(url, storageArea = getD
   };
 }
 
+export async function getStoredFloatingControlsHidden(storageArea = getDefaultStorageArea()) {
+  if (!storageArea) {
+    return false;
+  }
+
+  const settings = await readSiteSettings(storageArea);
+  return settings.floatingControlsHidden === true;
+}
+
 export async function saveDisplayModeForUrl({ url, displayMode }, storageArea = getDefaultStorageArea()) {
   const siteKey = getSiteSettingsKey(url);
   const normalizedDisplayMode = normalizeDisplayMode(displayMode);
@@ -160,6 +169,32 @@ export async function saveTranslationSettingsForUrl({
   };
 }
 
+export async function saveFloatingControlsHidden(hidden, storageArea = getDefaultStorageArea()) {
+  if (!storageArea) {
+    return {
+      ok: false,
+      error: {
+        code: "site_settings_unavailable",
+        message: "Site settings storage is unavailable."
+      }
+    };
+  }
+
+  const floatingControlsHidden = hidden === true;
+  const settings = await readSiteSettings(storageArea);
+  const nextSettings = {
+    ...settings,
+    floatingControlsHidden
+  };
+
+  await writeSiteSettings(storageArea, nextSettings);
+
+  return {
+    ok: true,
+    floatingControlsHidden
+  };
+}
+
 async function readSiteSettings(storageArea) {
   const stored = await storageGet(storageArea, SITE_SETTINGS_KEY);
   const settings = stored?.[SITE_SETTINGS_KEY];
@@ -175,7 +210,8 @@ async function readSiteSettings(storageArea) {
     autoTranslateByOrigin: normalizeBooleanMap(settings.autoTranslateByOrigin),
     defaultDisplayMode: normalizeStoredDisplayMode(settings.defaultDisplayMode),
     defaultQualityMode: normalizeStoredQualityMode(settings.defaultQualityMode),
-    defaultPaidProvider: normalizeStoredPaidProvider(settings.defaultPaidProvider)
+    defaultPaidProvider: normalizeStoredPaidProvider(settings.defaultPaidProvider),
+    floatingControlsHidden: settings.floatingControlsHidden === true
   };
 }
 
@@ -219,7 +255,8 @@ function createEmptySettings() {
     autoTranslateByOrigin: {},
     defaultDisplayMode: null,
     defaultQualityMode: null,
-    defaultPaidProvider: null
+    defaultPaidProvider: null,
+    floatingControlsHidden: false
   };
 }
 

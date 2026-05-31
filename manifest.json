@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Private Bilingual Translator",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Private manual bilingual translation for the current page.",
   "action": {
     "default_popup": "src/popup/popup.html"

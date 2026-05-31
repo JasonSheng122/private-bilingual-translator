@@ -6,6 +6,7 @@ import {
 } from "./gemini-like-response-parser.mjs";
 import {
   filterTranslatedPaidOutput,
+  getUnacceptedPaidOutputSegments,
   mergePaidOutputTranslations
 } from "./paid-translation-output.mjs";
 import {
@@ -82,6 +83,7 @@ export async function translateWithCustomGeminiProvider(segments, options = {}) 
   const batchResult = await runCustomGeminiBatches(fetchImpl, batches, {
     endpoint,
     apiKey,
+    qualityMode,
     maxConcurrentRequests
   });
 
@@ -236,7 +238,7 @@ function buildCustomGeminiPrompt(segments, qualityMode, { retry = false } = {}) 
   ].filter(Boolean).join("\n");
 }
 
-async function runCustomGeminiBatches(fetchImpl, batches, { endpoint, apiKey, maxConcurrentRequests }) {
+async function runCustomGeminiBatches(fetchImpl, batches, { endpoint, apiKey, qualityMode, maxConcurrentRequests }) {
   const translationsByBatch = new Array(batches.length);
   let nextBatchIndex = 0;
   let firstError = null;
@@ -272,10 +274,17 @@ async function runCustomGeminiBatches(fetchImpl, batches, { endpoint, apiKey, ma
           continue;
         }
 
+        const retrySegments = getUnacceptedPaidOutputSegments(batch.segments, output.translations);
+
+        if (retrySegments.length === 0) {
+          translationsByBatch[batchIndex] = output.translations;
+          continue;
+        }
+
         const retryResponse = await requestCustomGeminiTranslation(fetchImpl, {
           endpoint,
           apiKey,
-          requestJson: batch.retryRequestJson
+          requestJson: buildCustomGeminiRequestPair(retrySegments, { qualityMode }).retryRequestJson
         });
 
         if (!retryResponse.ok) {
@@ -283,8 +292,8 @@ async function runCustomGeminiBatches(fetchImpl, batches, { endpoint, apiKey, ma
           return;
         }
 
-        const retryTranslations = parseCustomGeminiTranslations(retryResponse.text, batch.segments);
-        const retryOutput = filterTranslatedPaidOutput(retryTranslations, batch.segments);
+        const retryTranslations = parseCustomGeminiTranslations(retryResponse.text, retrySegments);
+        const retryOutput = filterTranslatedPaidOutput(retryTranslations, retrySegments);
         const acceptedTranslations = mergePaidOutputTranslations(
           retryOutput.translations,
           output.translations,

@@ -13,7 +13,9 @@ import {
 import { translateSegments } from "./provider-manager.mjs";
 import { clearApiKey, getApiKeyStatus, saveApiKey } from "./secret-manager.mjs";
 import {
+  getStoredFloatingControlsHidden,
   getStoredTranslationSettingsForUrl,
+  saveFloatingControlsHidden,
   saveDisplayModeForUrl,
   saveTranslationSettingsForUrl
 } from "./site-settings.mjs";
@@ -21,6 +23,8 @@ import {
 const CONTENT_SCRIPT_READY_ATTEMPTS = 5;
 const CONTENT_SCRIPT_READY_RETRY_DELAY_MS = 75;
 const CONTENT_SCRIPT_FILE = "src/content/content-script.js";
+const FLOATING_CONTROLS_PORT_NAME = "pbt-floating-controls";
+const floatingControlsPorts = new Set();
 
 if (globalThis.chrome?.runtime?.onMessage) {
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -37,6 +41,12 @@ if (globalThis.chrome?.runtime?.onMessage) {
       });
 
     return true;
+  });
+}
+
+if (globalThis.chrome?.runtime?.onConnect) {
+  chrome.runtime.onConnect.addListener((port) => {
+    connectFloatingControlsPort(port);
   });
 }
 
@@ -67,6 +77,10 @@ export async function routeMessage(message, sender = {}) {
 
   if (message.type === MESSAGE_TYPES.SET_SITE_TRANSLATION_SETTINGS) {
     return setSiteTranslationSettings(message, sender);
+  }
+
+  if (message.type === MESSAGE_TYPES.SET_FLOATING_CONTROLS_HIDDEN) {
+    return setFloatingControlsHidden(message);
   }
 
   if (message.type === MESSAGE_TYPES.GET_CUSTOM_PROVIDER_CONFIG) {
@@ -131,6 +145,7 @@ async function getPageStatus(message, sender = {}) {
   const displayMode = storedSettings?.displayMode ?? normalizeDisplayMode(message.displayMode);
   const paidProvider = storedSettings?.paidProvider ?? normalizePaidProvider(message.paidProvider);
   const autoTranslate = storedSettings?.autoTranslate === true;
+  const floatingControlsHidden = await getStoredFloatingControlsHidden();
 
   if (!policy.blocked && Number.isInteger(tabId) && !fromContentScript) {
     try {
@@ -140,7 +155,8 @@ async function getPageStatus(message, sender = {}) {
           qualityMode,
           displayMode,
           paidProvider,
-          autoTranslate
+          autoTranslate,
+          floatingControlsHidden
         });
       }
     } catch {
@@ -154,7 +170,8 @@ async function getPageStatus(message, sender = {}) {
     qualityMode,
     displayMode,
     paidProvider,
-    autoTranslate
+    autoTranslate,
+    floatingControlsHidden
   };
 }
 
@@ -205,6 +222,16 @@ async function setSiteTranslationSettings(message, sender = {}) {
   });
 }
 
+async function setFloatingControlsHidden(message) {
+  const saved = await saveFloatingControlsHidden(message.hidden === true);
+
+  if (saved.ok) {
+    broadcastFloatingControlsHidden(saved.floatingControlsHidden);
+  }
+
+  return saved;
+}
+
 async function translatePage(message, sender = {}) {
   const senderTabId = Number(sender?.tab?.id);
   const tabId = Number.isInteger(Number(message.tabId)) ? Number(message.tabId) : senderTabId;
@@ -246,10 +273,24 @@ async function translatePage(message, sender = {}) {
   const collectResult = await sendTabMessage(tabId, {
     type: MESSAGE_TYPES.COLLECT_SEGMENTS,
     incremental,
+    displayMode,
     showPendingIndicators: fromContentScript
   });
 
   if (!collectResult.ok || collectResult.segments.length === 0) {
+    const cachedRenderedCount = Number.isInteger(collectResult.cachedRenderedCount)
+      ? collectResult.cachedRenderedCount
+      : 0;
+
+    if (collectResult.ok && cachedRenderedCount > 0) {
+      return {
+        ok: true,
+        status: displayMode === DISPLAY_MODES.REPLACE ? "replaced" : "bilingual",
+        segmentCount: 0,
+        renderedCount: cachedRenderedCount
+      };
+    }
+
     return {
       ok: true,
       status: "no_text",
@@ -317,6 +358,45 @@ async function sendPageCommand(tabId, message, sender = {}) {
   }
 
   return sendTabMessage(numericTabId, message);
+}
+
+function connectFloatingControlsPort(port) {
+  if (!port || port.name !== FLOATING_CONTROLS_PORT_NAME) {
+    return;
+  }
+
+  floatingControlsPorts.add(port);
+
+  try {
+    port.onDisconnect?.addListener?.(() => {
+      floatingControlsPorts.delete(port);
+    });
+  } catch {
+    floatingControlsPorts.delete(port);
+  }
+
+  getStoredFloatingControlsHidden()
+    .then((hidden) => {
+      postFloatingControlsHidden(port, hidden);
+    })
+    .catch(() => {});
+}
+
+function broadcastFloatingControlsHidden(hidden) {
+  for (const port of Array.from(floatingControlsPorts)) {
+    postFloatingControlsHidden(port, hidden);
+  }
+}
+
+function postFloatingControlsHidden(port, hidden) {
+  try {
+    port.postMessage({
+      type: MESSAGE_TYPES.APPLY_FLOATING_CONTROLS_HIDDEN,
+      floatingControlsHidden: hidden === true
+    });
+  } catch {
+    floatingControlsPorts.delete(port);
+  }
 }
 
 async function isContentScriptReady(tabId) {

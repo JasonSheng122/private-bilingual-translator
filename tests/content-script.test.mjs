@@ -669,7 +669,7 @@ test("floating controls show translate, settings, hide, and translate button tog
   showHandle.click();
   assert.equal(panel.getAttribute("data-pbt-hidden"), "false");
 
-  assert.equal(sentMessages.length, 7);
+  assert.equal(sentMessages.length, 9);
   assert.equal(sentMessages[0].type, "PBT_SET_SITE_TRANSLATION_SETTINGS");
   assert.equal(sentMessages[0].qualityMode, "natural");
   assert.equal(sentMessages[0].paidProvider, "custom_openai");
@@ -696,6 +696,66 @@ test("floating controls show translate, settings, hide, and translate button tog
   assert.equal(sentMessages[5].type, "PBT_RESTORE_PAGE");
   assert.equal(sentMessages[6].type, "PBT_SET_SITE_TRANSLATION_SETTINGS");
   assert.equal(sentMessages[6].autoTranslate, false);
+  assert.equal(sentMessages[7].type, "PBT_SET_FLOATING_CONTROLS_HIDDEN");
+  assert.equal(sentMessages[7].hidden, true);
+  assert.equal(sentMessages[8].type, "PBT_SET_FLOATING_CONTROLS_HIDDEN");
+  assert.equal(sentMessages[8].hidden, false);
+});
+
+test("floating controls follow global hidden state from page status and runtime sync", async () => {
+  const document = createDocument();
+  document.body.appendChild(el(document, "p", "Readable paragraph"));
+  const portMessages = [];
+  let connectName = "";
+
+  const api = await loadContentApi(document, {
+    connect(options) {
+      connectName = options?.name ?? "";
+
+      return {
+        onMessage: {
+          addListener(listener) {
+            portMessages.push(listener);
+          }
+        },
+        onDisconnect: {
+          addListener() {}
+        },
+        postMessage() {}
+      };
+    }
+  });
+
+  api.showFloatingTranslateButton({
+    qualityMode: "free",
+    displayMode: "bilingual",
+    floatingControlsHidden: true
+  });
+
+  const panel = findNode(document.body, (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "floating-panel");
+  const showHandle = findNode(document.body, (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "show-handle");
+
+  assert.ok(panel);
+  assert.equal(panel.getAttribute("data-pbt-hidden"), "true");
+  assert.equal(showHandle.style.display, "block");
+  assert.equal(connectName, "pbt-floating-controls");
+  assert.equal(portMessages.length, 1);
+
+  portMessages[0]({
+    type: "PBT_APPLY_FLOATING_CONTROLS_HIDDEN",
+    floatingControlsHidden: false
+  });
+
+  assert.equal(panel.getAttribute("data-pbt-hidden"), "false");
+  assert.equal(showHandle.style.display, "none");
+
+  portMessages[0]({
+    type: "PBT_APPLY_FLOATING_CONTROLS_HIDDEN",
+    floatingControlsHidden: true
+  });
+
+  assert.equal(panel.getAttribute("data-pbt-hidden"), "true");
+  assert.equal(showHandle.style.display, "block");
 });
 
 test("floating settings embeds extension config frame without page api key fields", async () => {
@@ -803,6 +863,111 @@ test("floating replace toggle shows checkmark and restores rendered text", async
       .map((message) => message.type),
     ["PBT_TRANSLATE_PAGE", "PBT_RESTORE_PAGE"]
   );
+});
+
+test("restore page does not reapply cached replace translations from restore mutations", async () => {
+  const document = createDocument();
+  const nav = el(document, "nav", "Home");
+  const account = el(document, "div", "Account menu", { "data-testid": "SideNav_AccountSwitcher_Button" });
+  document.body.appendChild(nav);
+  document.body.appendChild(account);
+  const sentMessages = [];
+
+  const api = await loadContentApi(document, {
+    location: { href: "https://x.com/example" },
+    mutationObserver: true,
+    setTimeout() {
+      return 1;
+    },
+    clearTimeout() {},
+    sendMessage(message, callback) {
+      sentMessages.push(message);
+      callback({ ok: true, status: "replaced" });
+    }
+  });
+
+  api.showFloatingTranslateButton({
+    qualityMode: "natural",
+    displayMode: "replace",
+    paidProvider: "custom_openai",
+    autoTranslate: true
+  });
+  const collected = api.collectSegments(document);
+  api.renderTranslations({
+    displayMode: "replace",
+    translations: [
+      { id: collected.segments[0].id, text: "首页" },
+      { id: collected.segments[1].id, text: "账号菜单" }
+    ]
+  });
+
+  const restored = api.restorePage();
+  api.__mutationObservers[0].trigger([
+    { type: "characterData", target: nav.childNodes[0] },
+    { type: "characterData", target: account.childNodes[0] }
+  ]);
+
+  assert.equal(restored.restoredCount, 2);
+  assert.equal(nav.textContent, "Home");
+  assert.equal(account.textContent, "Account menu");
+  assert.equal(nav.hasAttribute("data-pbt-replaced"), false);
+  assert.equal(account.hasAttribute("data-pbt-replaced"), false);
+  assert.equal(sentMessages.length, 0);
+});
+
+test("floating restore reloads when direct translation markers lost their restore snapshots", async () => {
+  const document = createDocument();
+  const nav = el(document, "nav", "首页");
+  nav.setAttribute("data-pbt-replaced", "true");
+  document.body.appendChild(nav);
+  const sentMessages = [];
+  let reloadCalled = false;
+  let api;
+
+  api = await loadContentApi(document, {
+    location: {
+      href: "https://x.com/example",
+      reload() {
+        reloadCalled = true;
+      }
+    },
+    sendMessage(message, callback) {
+      sentMessages.push(message);
+
+      if (message.type === "PBT_RESTORE_PAGE") {
+        callback(api.restorePage());
+        return;
+      }
+
+      if (message.type === "PBT_SET_SITE_TRANSLATION_SETTINGS") {
+        callback({
+          ok: true,
+          displayMode: message.displayMode,
+          qualityMode: message.qualityMode,
+          paidProvider: message.paidProvider,
+          autoTranslate: message.autoTranslate === true
+        });
+        return;
+      }
+
+      callback({ ok: true });
+    }
+  });
+
+  api.showFloatingTranslateButton({
+    qualityMode: "free",
+    displayMode: "replace",
+    paidProvider: "gemini"
+  });
+  const translateButton = findNode(document.body, (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "translate-toggle");
+
+  assert.equal(translateButton.textContent, "译✓");
+
+  translateButton.click();
+
+  assert.equal(reloadCalled, true);
+  assert.equal(sentMessages.some((message) => message.type === "PBT_RESTORE_PAGE"), true);
+  assert.equal(sentMessages.some((message) => message.type === "PBT_TRANSLATE_PAGE"), false);
 });
 
 test("floating translate button shows spinner while request is pending", async () => {
@@ -1193,11 +1358,13 @@ test("floating display mode switch automatically removes bilingual text before r
   assert.equal(sentMessages.some((message) => message.type === "PBT_RESTORE_PAGE"), false);
 });
 
-test("floating translate click removes stale ui when extension context is invalidated", async () => {
+test("floating translate click restores rendered text and removes stale ui when extension context is invalidated", async () => {
   const document = createDocument();
-  document.body.appendChild(el(document, "p", "Readable paragraph"));
+  const paragraph = el(document, "p", "Readable paragraph");
+  document.body.appendChild(paragraph);
+  let api;
 
-  const api = await loadContentApi(document, {
+  api = await loadContentApi(document, {
     location: { href: "https://example.com/article" },
     sendMessage() {
       throw new Error("Extension context invalidated.");
@@ -1209,11 +1376,18 @@ test("floating translate click removes stale ui when extension context is invali
     displayMode: "bilingual",
     paidProvider: "custom_openai"
   });
+  const collected = api.collectSegments(document);
+  api.renderTranslations({
+    displayMode: "replace",
+    translations: [{ id: collected.segments[0].id, text: "已翻译段落" }]
+  });
   const translateButton = findNode(document.body, (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "translate-toggle");
 
   assert.doesNotThrow(() => {
     translateButton.click();
   });
+  assert.equal(paragraph.textContent, "Readable paragraph");
+  assert.equal(paragraph.hasAttribute("data-pbt-replaced"), false);
   assert.equal(findNode(document.body, (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "floating-panel"), null);
 });
 
@@ -1636,6 +1810,88 @@ test("floating auto translation follows new X scroll content", async () => {
   ]);
 });
 
+test("floating auto translation reuses cached bilingual translation when virtualized social content returns", async () => {
+  const document = createDocument();
+  const firstArticle = el(document, "article", "");
+  firstArticle.appendChild(el(document, "p", "Returning comment paragraph."));
+  document.body.appendChild(firstArticle);
+  const sentMessages = [];
+
+  const api = await loadContentApi(document, {
+    location: { href: "https://x.com/example/status/1" },
+    mutationObserver: true,
+    immediateTimers: true,
+    sendMessage(message, callback) {
+      sentMessages.push(message);
+      callback({ ok: true, status: "bilingual" });
+    }
+  });
+
+  api.showFloatingTranslateButton({
+    qualityMode: "natural",
+    displayMode: "bilingual",
+    paidProvider: "custom_openai"
+  });
+  const firstCollected = api.collectSegments(document);
+  api.renderTranslations({
+    displayMode: "bilingual",
+    translations: [{ id: firstCollected.segments[0].id, text: "回来的评论段落。" }]
+  });
+
+  firstArticle.remove();
+
+  const returningArticle = el(document, "article", "");
+  returningArticle.appendChild(el(document, "p", "Returning comment paragraph."));
+  document.body.appendChild(returningArticle);
+  api.__mutationObservers[0].trigger([
+    { type: "childList", addedNodes: [returningArticle], target: document.body }
+  ]);
+
+  assert.equal(sentMessages.length, 0);
+  assert.equal(returningArticle.textContent, "Returning comment paragraph.回来的评论段落。");
+  assert.equal(countPendingIndicators(document.body), 0);
+});
+
+test("floating auto translation reuses cached bilingual translation when page removes the marker", async () => {
+  const document = createDocument();
+  const article = el(document, "article", "");
+  const paragraph = el(document, "p", "Stable comment paragraph.");
+  article.appendChild(paragraph);
+  document.body.appendChild(article);
+  const sentMessages = [];
+
+  const api = await loadContentApi(document, {
+    location: { href: "https://x.com/example/status/1" },
+    mutationObserver: true,
+    immediateTimers: true,
+    sendMessage(message, callback) {
+      sentMessages.push(message);
+      callback({ ok: true, status: "bilingual" });
+    }
+  });
+
+  api.showFloatingTranslateButton({
+    qualityMode: "natural",
+    displayMode: "bilingual",
+    paidProvider: "custom_openai"
+  });
+  const firstCollected = api.collectSegments(document);
+  api.renderTranslations({
+    displayMode: "bilingual",
+    translations: [{ id: firstCollected.segments[0].id, text: "稳定的评论段落。" }]
+  });
+
+  const marker = findNode(paragraph, (node) => node.nodeType === 1 && node.hasAttribute("data-pbt-translation"));
+  marker.remove();
+  api.__mutationObservers[0].trigger([
+    { type: "childList", addedNodes: [], removedNodes: [marker], target: paragraph }
+  ]);
+
+  assert.equal(sentMessages.length, 0);
+  assert.equal(paragraph.textContent, "Stable comment paragraph.稳定的评论段落。");
+  assert.equal(countPendingIndicators(document.body), 0);
+});
+
 test("floating translation retries after hidden spa tab content settles", async () => {
   const document = createDocument();
   const firstParagraph = el(document, "p", "First paragraph");
@@ -2006,7 +2262,7 @@ test("renderer skips stale spa translations when source text changed before resp
   assert.equal(headline.textContent, "Answer title[mock zh] Answer title");
 });
 
-test("floating replace translation reruns when a dynamic page overwrites translated text", async () => {
+test("floating replace translation reuses cache when a dynamic page restores the same source text", async () => {
   const document = createDocument();
   const headline = el(document, "h1", "Welcome headline");
   document.body.appendChild(headline);
@@ -2048,6 +2304,41 @@ test("floating replace translation reruns when a dynamic page overwrites transla
     { type: "characterData", target: headline.childNodes[0] }
   ]);
 
+  assert.equal(sentMessages.length, 0);
+  assert.equal(headline.textContent, "欢迎标题");
+});
+
+test("floating replace translation sends provider request when a dynamic page changes to new source text", async () => {
+  const document = createDocument();
+  const headline = el(document, "h1", "Welcome headline");
+  document.body.appendChild(headline);
+  const sentMessages = [];
+
+  const api = await loadContentApi(document, {
+    location: { href: "https://example.com/react-page" },
+    mutationObserver: true,
+    immediateTimers: true,
+    sendMessage(message, callback) {
+      sentMessages.push(message);
+      callback({ ok: true, status: "replaced" });
+    }
+  });
+
+  api.showFloatingTranslateButton({
+    qualityMode: "deep",
+    displayMode: "replace",
+    paidProvider: "custom_openai"
+  });
+  const firstCollected = api.collectSegments(document);
+  api.renderTranslations({
+    displayMode: "replace",
+    translations: [{ id: firstCollected.segments[0].id, text: "欢迎标题" }]
+  });
+  headline.childNodes[0].nodeValue = "Updated headline";
+  api.__mutationObservers[0].trigger([
+    { type: "characterData", target: headline.childNodes[0] }
+  ]);
+
   assert.equal(sentMessages.length, 1);
   assert.equal(sentMessages[0].type, "PBT_TRANSLATE_PAGE");
   assert.equal(sentMessages[0].qualityMode, "deep");
@@ -2057,7 +2348,7 @@ test("floating replace translation reruns when a dynamic page overwrites transla
   assert.equal(sentMessages[0].incremental, true);
 });
 
-test("floating replace translation reruns stale overwrites after render", async () => {
+test("floating replace translation reuses cache for stale overwrites after render", async () => {
   const document = createDocument();
   const headline = el(document, "h1", "Hydrated headline");
   document.body.appendChild(headline);
@@ -2107,11 +2398,8 @@ test("floating replace translation reruns stale overwrites after render", async 
 
   const translateMessages = sentMessages.filter((message) => message.type === "PBT_TRANSLATE_PAGE");
 
-  assert.equal(translateMessages.length, 2);
-  assert.equal(translateMessages[1].displayMode, "replace");
-  assert.equal(translateMessages[1].qualityMode, "deep");
-  assert.equal(translateMessages[1].url, "https://example.com/hydrated");
-  assert.equal(translateMessages[1].incremental, true);
+  assert.equal(translateMessages.length, 1);
+  assert.equal(headline.textContent, "已水合标题");
 });
 
 test("floating bilingual translation reruns when a dynamic page updates translated text", async () => {
@@ -2625,6 +2913,7 @@ async function loadContentApi(document, options = {}) {
         sendMessage: options.sendMessage ?? function sendMessage(message, callback) {
           callback({ ok: true });
         },
+        connect: options.connect,
         getURL: options.getURL ?? function getURL(path) {
           return `chrome-extension://test-id/${path}`;
         },

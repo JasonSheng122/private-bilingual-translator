@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  getStoredFloatingControlsHidden,
   getSiteSettingsKey,
   getStoredDisplayModeForUrl,
   getStoredTranslationSettingsForUrl,
+  saveFloatingControlsHidden,
   saveDisplayModeForUrl,
   saveTranslationSettingsForUrl
 } from "../src/background/site-settings.mjs";
@@ -124,6 +126,34 @@ test("site settings preserve auto translate when popup updates translation prefe
     paidProvider: "gemini",
     autoTranslate: true
   });
+});
+
+test("site settings store global floating controls hidden preference", async () => {
+  const storageArea = makeStorageArea();
+
+  assert.equal(await getStoredFloatingControlsHidden(storageArea), false);
+
+  const hidden = await saveFloatingControlsHidden(true, storageArea);
+  const hiddenValue = await getStoredFloatingControlsHidden(storageArea);
+
+  assert.deepEqual(hidden, {
+    ok: true,
+    floatingControlsHidden: true
+  });
+  assert.equal(hiddenValue, true);
+  assert.equal(storageArea.data.pbt_site_settings_v1.floatingControlsHidden, true);
+
+  const shown = await saveFloatingControlsHidden(false, storageArea);
+  const shownValue = await getStoredFloatingControlsHidden(storageArea);
+
+  assert.deepEqual(shown, {
+    ok: true,
+    floatingControlsHidden: false
+  });
+  assert.equal(shownValue, false);
+  assert.equal(storageArea.data.pbt_site_settings_v1.floatingControlsHidden, false);
+  assert.deepEqual(Object.keys(storageArea.data.pbt_site_settings_v1.displayModesByOrigin), []);
+  assert.deepEqual(Object.keys(storageArea.data.pbt_site_settings_v1.autoTranslateByOrigin), []);
 });
 
 test("site settings reject non web urls", async () => {
