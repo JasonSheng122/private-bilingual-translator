@@ -100,6 +100,10 @@
 22. Twitter/X 等页面中鼠标悬停产生的 hover card、tooltip、popover 不触发自动增量翻译，不显示原文旁 spinner，也不新增 provider 请求。
 23. Twitter/X、Reddit 等社交/内容流页面翻译完成后，继续滚动出现的新增可见正文会触发自动增量翻译，新增正文原文旁显示小型 spinner，完成后落地译文并移除 spinner；互动按钮、`K/M` 统计数字和裸域名旁不显示 spinner。
 24. Twitter/X、Reddit 等社交/内容流页面向上滚动回到当前页面会话中已翻译过的正文时，不重复请求 provider，也不重新显示 spinner；页面框架移除双语译文 marker 时，只复用会话译文补回。
+25. runtime message failure、后台端口关闭或扩展 reload 这类失败路径不会让主按钮 loading 或原文旁 pending spinner 无限停留。
+26. 真实 Chrome 中排查 spinner 闪烁或残留时，必须确认可疑控件是否带 `data-pbt-control="translation-pending"` 或 `translation-pending-spinner`；网站原生直播、头像、加载或动画控件不能当作插件等待控件，但间歇出现的插件 pending 节点必须按时间窗口继续追根因。
+27. 直播卡、推荐卡、动态侧栏或普通容器的纯视觉 `class` / `style` 刷新不会触发自动增量翻译或 pending spinner；隐藏内容真正变为可见时仍能补翻。
+28. Twitter/X、Reddit 等社交/内容流页面的主正文新增内容仍会自动补翻；右侧推荐、趋势、直播、相关内容等 secondary rail 不因滚动刷新或会话缓存复用自动翻译，也不创建 pending spinner。
 
 ## 文档检查
 

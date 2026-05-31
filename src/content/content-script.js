@@ -98,6 +98,8 @@
   const TRANSIENT_OVERLAY_UI_ATTRIBUTE_NAMES = ["class", "id"];
   const TRANSIENT_OVERLAY_DATA_PATTERN = /(^|[^a-z0-9])(hover[-_ ]?card|profile[-_ ]?card|user[-_ ]?card|tooltip|popover|popper|tippy|dropdown|flyout)([^a-z0-9]|$)/i;
   const TRANSIENT_OVERLAY_UI_PATTERN = /(^|[^a-z0-9])(hover[-_ ]?card|tooltip|popover|popper|tippy|dropdown|flyout)([^a-z0-9]|$)/i;
+  const SECONDARY_RAIL_ATTRIBUTE_NAMES = ["data-testid", "data-test-id", "data-qa", "class", "id", "aria-label", "title"];
+  const SECONDARY_RAIL_PATTERN = /(^|[^a-z0-9])(right rail|right sidebar|side rail|sidebar|sidebar column|recommend(?:ed|ation|ations|s)?|suggest(?:ed|ion|ions|s)?|related|trend(?:ing|s)?|what s happening|who to follow|live|broadcast|promoted|sponsor(?:ed)?)([^a-z0-9]|$)/i;
   const SOCIAL_HOST_PATTERN = /(^|\.)((x|twitter|instagram|threads|facebook|linkedin|tiktok|reddit)\.com|bsky\.app|mastodon\.social)$/i;
   const NON_PROFILE_SOCIAL_PATHS = new Set([
     "about",
@@ -197,7 +199,7 @@
         attachPendingTranslationIndicator(id, textNode);
       }
       segments.push({ id, text });
-    });
+    }, { skipAutoIncrementalSecondarySurfaces: incremental });
 
     return { ok: true, segments, cachedRenderedCount };
   }
@@ -883,28 +885,32 @@
     return { ok: true, shown: true };
   }
 
-  function walkNode(node, onTextNode) {
+  function walkNode(node, onTextNode, options = {}) {
     if (!node) {
       return;
     }
 
     if (node.nodeType === TEXT_NODE) {
-      if (isTextNodeAllowed(node)) {
+      if (isTextNodeAllowed(node, options)) {
         onTextNode(node);
       }
       return;
     }
 
-    if (node.nodeType !== ELEMENT_NODE || isElementExcluded(node)) {
+    if (
+      node.nodeType !== ELEMENT_NODE ||
+      isElementExcluded(node) ||
+      (options.skipAutoIncrementalSecondarySurfaces === true && isAutoIncrementalSecondarySurface(node))
+    ) {
       return;
     }
 
     for (const child of Array.from(node.childNodes || [])) {
-      walkNode(child, onTextNode);
+      walkNode(child, onTextNode, options);
     }
   }
 
-  function isTextNodeAllowed(textNode) {
+  function isTextNodeAllowed(textNode, options = {}) {
     const parent = textNode.parentElement;
 
     if (!parent || state.replacedTextNodes.has(textNode) || hasActiveBilingualTranslation(textNode)) {
@@ -912,6 +918,13 @@
     }
 
     if (hasExcludedElementInAncestry(parent)) {
+      return false;
+    }
+
+    if (
+      options.skipAutoIncrementalSecondarySurfaces === true &&
+      hasAutoIncrementalSecondarySurfaceInAncestry(parent)
+    ) {
       return false;
     }
 
@@ -1328,6 +1341,59 @@
     return false;
   }
 
+  function hasAutoIncrementalSecondarySurfaceInAncestry(element) {
+    let current = element;
+
+    while (current && current.nodeType === ELEMENT_NODE) {
+      if (isAutoIncrementalSecondarySurface(current)) {
+        return true;
+      }
+
+      current = current.parentElement;
+    }
+
+    return false;
+  }
+
+  function isAutoIncrementalSecondarySurface(element) {
+    if (!element || element.nodeType !== ELEMENT_NODE || typeof element.getAttribute !== "function") {
+      return false;
+    }
+
+    if (hasSecondaryRailSemanticSignal(element)) {
+      return true;
+    }
+
+    if (!isKnownSocialHost(getCurrentHostname())) {
+      return false;
+    }
+
+    const role = normalizeAttributeValue(element.getAttribute("role")).toLowerCase();
+    return getElementTagName(element) === "ASIDE" || role === "complementary";
+  }
+
+  function hasSecondaryRailSemanticSignal(element) {
+    for (const name of SECONDARY_RAIL_ATTRIBUTE_NAMES) {
+      const value = normalizeSemanticAttributeValue(element.getAttribute(name));
+
+      if (value && SECONDARY_RAIL_PATTERN.test(value)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  function normalizeSemanticAttributeValue(value) {
+    return String(value ?? "")
+      .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+      .replace(/[_-]+/g, " ")
+      .replace(/['’]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase();
+  }
+
   function normalizeAttributeValue(value) {
     return String(value ?? "").trim();
   }
@@ -1374,6 +1440,20 @@
 
   function isKnownSocialHost(hostname) {
     return SOCIAL_HOST_PATTERN.test(String(hostname ?? ""));
+  }
+
+  function getCurrentHostname() {
+    const hostname = root.location?.hostname;
+
+    if (hostname) {
+      return hostname;
+    }
+
+    try {
+      return new URL(String(root.location?.href ?? "")).hostname;
+    } catch {
+      return "";
+    }
   }
 
   function isNonLinguisticText(value) {
@@ -1992,10 +2072,6 @@
   }
 
   function updatePendingTranslationIndicators() {
-    if (!state.floatingPanel || typeof state.floatingPanel.querySelector !== "function") {
-      return;
-    }
-
     clearPendingTranslationIndicatorsIfIdle();
   }
 
@@ -2131,7 +2207,7 @@
       }
 
       if (shouldReuseSessionTranslationsForMutations(wasTranslated)) {
-        renderCachedSessionTranslationsForMutations(mutations);
+        renderCachedSessionTranslationsForMutations(mutations, { skipAutoIncrementalSecondarySurfaces: true });
       }
       const shouldRetranslateStaleReplace = wasTranslated && staleReplaceCount > 0;
       const shouldRetranslateStaleBilingual = wasTranslated && staleBilingualCount > 0;
@@ -2160,6 +2236,7 @@
     });
     state.floatingObserver.observe(doc.body, {
       attributes: true,
+      attributeOldValue: true,
       attributeFilter: REVEAL_ATTRIBUTE_NAMES,
       childList: true,
       subtree: true,
@@ -2182,50 +2259,58 @@
     state.sessionTranslationReuseSuspended = false;
   }
 
-  function renderCachedSessionTranslationsForMutations(mutations) {
+  function renderCachedSessionTranslationsForMutations(mutations, options = {}) {
     let renderedCount = 0;
 
     for (const mutation of Array.from(mutations || [])) {
       if (mutation?.type === "characterData") {
-        renderedCount += renderCachedSessionTranslationsInNode(mutation.target);
+        renderedCount += renderCachedSessionTranslationsInNode(mutation.target, options);
         continue;
       }
 
-      if (mutation?.type === "attributes" && isRevealAttributeMutation(mutation)) {
-        renderedCount += renderCachedSessionTranslationsInNode(mutation.target);
+      if (mutation?.type === "attributes" && isRevealAttributeMutation(mutation, options)) {
+        renderedCount += renderCachedSessionTranslationsInNode(mutation.target, options);
         continue;
       }
 
       for (const node of Array.from(mutation?.addedNodes || [])) {
-        renderedCount += renderCachedSessionTranslationsInNode(node);
+        renderedCount += renderCachedSessionTranslationsInNode(node, options);
       }
 
       if (mutation?.type === "childList" && hasRemovedRenderedTranslation(mutation)) {
-        renderedCount += renderCachedSessionTranslationsInNode(mutation.target);
+        renderedCount += renderCachedSessionTranslationsInNode(mutation.target, options);
       }
     }
 
     return renderedCount;
   }
 
-  function renderCachedSessionTranslationsInNode(node) {
+  function renderCachedSessionTranslationsInNode(node, options = {}) {
     if (!node) {
       return 0;
     }
 
     if (node.nodeType === TEXT_NODE) {
       const text = normalizeText(node.nodeValue);
-      return text && renderCachedSessionTranslationForTextNode(node, text, state.floatingDisplayMode) ? 1 : 0;
+      return text &&
+        isTextNodeAllowed(node, options) &&
+        renderCachedSessionTranslationForTextNode(node, text, state.floatingDisplayMode)
+        ? 1
+        : 0;
     }
 
-    if (node.nodeType !== ELEMENT_NODE || isElementExcluded(node)) {
+    if (
+      node.nodeType !== ELEMENT_NODE ||
+      isElementExcluded(node) ||
+      (options.skipAutoIncrementalSecondarySurfaces === true && isAutoIncrementalSecondarySurface(node))
+    ) {
       return 0;
     }
 
     let renderedCount = 0;
 
     for (const child of Array.from(node.childNodes || [])) {
-      renderedCount += renderCachedSessionTranslationsInNode(child);
+      renderedCount += renderCachedSessionTranslationsInNode(child, options);
     }
 
     return renderedCount;
@@ -2248,17 +2333,19 @@
   }
 
   function hasPotentialNewTextMutation(mutations) {
+    const options = { skipAutoIncrementalSecondarySurfaces: true };
+
     for (const mutation of Array.from(mutations || [])) {
-      if (mutation?.type === "characterData" && isTextNodeAllowed(mutation.target)) {
+      if (mutation?.type === "characterData" && isTextNodeAllowed(mutation.target, options)) {
         return true;
       }
 
-      if (mutation?.type === "attributes" && isRevealAttributeMutation(mutation)) {
+      if (mutation?.type === "attributes" && isRevealAttributeMutation(mutation, options)) {
         return true;
       }
 
       for (const node of Array.from(mutation?.addedNodes || [])) {
-        if (hasAllowedText(node)) {
+        if (hasAllowedText(node, options)) {
           return true;
         }
       }
@@ -2268,13 +2355,15 @@
   }
 
   function hasPotentialSettlingTextMutation(mutations) {
+    const options = { skipAutoIncrementalSecondarySurfaces: true };
+
     for (const mutation of Array.from(mutations || [])) {
       if (mutation?.type !== "childList") {
         continue;
       }
 
       for (const node of Array.from(mutation.addedNodes || [])) {
-        if (hasPotentialSettlingText(node)) {
+        if (hasPotentialSettlingText(node, options)) {
           return true;
         }
       }
@@ -2283,7 +2372,7 @@
     return false;
   }
 
-  function hasPotentialSettlingText(node) {
+  function hasPotentialSettlingText(node, options = {}) {
     if (!node) {
       return false;
     }
@@ -2295,10 +2384,22 @@
         return false;
       }
 
+      if (
+        parent &&
+        options.skipAutoIncrementalSecondarySurfaces === true &&
+        hasAutoIncrementalSecondarySurfaceInAncestry(parent)
+      ) {
+        return false;
+      }
+
       return Boolean(normalizeText(node.nodeValue) && parent && hasSoftRevealExcludedElementInAncestry(parent));
     }
 
-    if (node.nodeType !== ELEMENT_NODE || hasHardExcludedElementInAncestry(node)) {
+    if (
+      node.nodeType !== ELEMENT_NODE ||
+      hasHardExcludedElementInAncestry(node) ||
+      (options.skipAutoIncrementalSecondarySurfaces === true && isAutoIncrementalSecondarySurface(node))
+    ) {
       return false;
     }
 
@@ -2306,7 +2407,7 @@
       return true;
     }
 
-    return Array.from(node.childNodes || []).some((child) => hasPotentialSettlingText(child));
+    return Array.from(node.childNodes || []).some((child) => hasPotentialSettlingText(child, options));
   }
 
   function hasHardExcludedElementInAncestry(element) {
@@ -2382,10 +2483,18 @@
     return Boolean(style && (style.display === "none" || style.visibility === "hidden"));
   }
 
-  function isRevealAttributeMutation(mutation) {
+  function isRevealAttributeMutation(mutation, options = {}) {
     const target = mutation.target;
 
     if (!target || target.nodeType !== ELEMENT_NODE || !REVEAL_ATTRIBUTE_NAMES.includes(mutation.attributeName)) {
+      return false;
+    }
+
+    if (mutation.attributeName === "class" && !isClassRevealMutation(target, mutation.oldValue)) {
+      return false;
+    }
+
+    if (mutation.attributeName === "style" && !isStyleRevealMutation(mutation.oldValue)) {
       return false;
     }
 
@@ -2417,7 +2526,32 @@
       return false;
     }
 
-    return hasAllowedText(target);
+    return hasAllowedText(target, options);
+  }
+
+  function isClassRevealMutation(target, oldValue) {
+    const previousClass = normalizeAttributeValue(oldValue).toLowerCase();
+    const currentClass = normalizeAttributeValue(target.getAttribute("class")).toLowerCase();
+
+    if (previousClass === currentClass) {
+      return false;
+    }
+
+    return hasInactiveClassState(previousClass) ||
+      (hasActiveClassState(currentClass) && !hasActiveClassState(previousClass));
+  }
+
+  function hasInactiveClassState(value) {
+    return /\b(hidden|inactive|collapsed|closed)\b/i.test(value);
+  }
+
+  function hasActiveClassState(value) {
+    return /\b(active|selected|current|open|visible|shown|expanded)\b/i.test(value);
+  }
+
+  function isStyleRevealMutation(oldValue) {
+    return /(?:^|;)\s*display\s*:\s*none\b/i.test(String(oldValue ?? "")) ||
+      /(?:^|;)\s*visibility\s*:\s*hidden\b/i.test(String(oldValue ?? ""));
   }
 
   function isStateAttributeName(name) {
@@ -2446,20 +2580,24 @@
     return /^(true|1)$/i.test(value) || /\b(active|selected|current|open|visible|shown|expanded|checked)\b/i.test(value);
   }
 
-  function hasAllowedText(node) {
+  function hasAllowedText(node, options = {}) {
     if (!node) {
       return false;
     }
 
     if (node.nodeType === TEXT_NODE) {
-      return isTextNodeAllowed(node);
+      return isTextNodeAllowed(node, options);
     }
 
-    if (node.nodeType !== ELEMENT_NODE || isElementExcluded(node)) {
+    if (
+      node.nodeType !== ELEMENT_NODE ||
+      isElementExcluded(node) ||
+      (options.skipAutoIncrementalSecondarySurfaces === true && isAutoIncrementalSecondarySurface(node))
+    ) {
       return false;
     }
 
-    return Array.from(node.childNodes || []).some((child) => hasAllowedText(child));
+    return Array.from(node.childNodes || []).some((child) => hasAllowedText(child, options));
   }
 
   function scheduleFloatingAutoTranslate(options = {}) {
@@ -2708,6 +2846,9 @@
 
         if (runtimeError) {
           handleRuntimeMessageFailure(runtimeError);
+          if (typeof callback === "function") {
+            callback(makeRuntimeMessageFailureResponse());
+          }
           return;
         }
 
@@ -2823,6 +2964,16 @@
     } catch (error) {
       return error;
     }
+  }
+
+  function makeRuntimeMessageFailureResponse() {
+    return {
+      ok: false,
+      error: {
+        code: "runtime_message_failed",
+        message: "The extension message did not complete. Try again after the page settles."
+      }
+    };
   }
 
   function handleRuntimeMessageFailure(error) {

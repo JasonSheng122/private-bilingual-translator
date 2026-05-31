@@ -84,6 +84,7 @@
 17. hover card、tooltip、popover 等临时浮层文本不进入 collect，避免鼠标悬停 UI 被当作正文。
 18. button、`role="button"` 等交互控件文本不进入 collect，避免页面按钮旁显示 pending spinner。
 19. `2.4K`、`453.6K`、`18M` 这类 compact 统计数字和 `b00kd.com` 这类裸 URL/域名不进入 collect。
+20. 自动增量 collect 应跳过右侧推荐、趋势、直播、相关内容等 secondary rail；手动完整 collect 和普通文档 `Table of contents` 侧栏不应被该自动增量专用边界误伤。
 
 ## renderer 测试
 
@@ -112,6 +113,7 @@
 21. 点击还原原文或进入重翻译 prepare 后，页面会话译文缓存必须暂停复用；restore 产生的 characterData mutation 不能把刚恢复的英文再次翻回中文。
 22. 点击带绿色勾选的右侧 `译` 时，restore 动作不能走翻译等待态的一帧延迟调度；即使翻译动作为了绘制等待态延迟发送，取消勾选也必须立即发送 `PBT_RESTORE_PAGE` 并恢复原文。
 23. 如果页面 DOM 残留 `data-pbt-replaced` 但当前 content script 没有 active restore 快照，右侧按钮必须显示已翻译态；点击后发送 `PBT_RESTORE_PAGE`，调用 `location.reload()`，不得发送 `PBT_TRANSLATE_PAGE`。
+24. 点击 `译` 后如果 runtime message callback 报错，主按钮 loading 和原文旁 pending spinner 必须清理，不能停在无限转圈状态。
 
 双语翻译：
 
@@ -205,6 +207,9 @@
 26. content script 在 `restorePage`、`prepareTranslation` 或显式移除双语译文后，应暂停当前页面会话译文复用，直到下一次成功渲染新译文。
 27. background 收到 content script 增量 collect 返回 `cachedRenderedCount` 且无新 segments 时，应返回已翻译状态，不调用 provider，不发送 render 消息。
 28. content script 遇到 extension context invalidated 时，如果当前旧脚本仍有直接翻译快照，应先恢复已渲染文本并清理 `data-pbt-replaced`，再移除旧右侧 UI；如果只剩 orphan marker，应走 reload 兜底。
+29. content script 收到 `chrome.runtime.lastError` 这类 runtime message failure 时，必须向手动翻译和自动增量翻译调用方返回净化失败响应，使 in-flight 状态、主按钮 loading 和原文旁 pending spinner 都能清理。
+30. content script 不应把已可见元素的纯视觉 `class` / `style` 变化当作新增正文补翻；`hidden`、`aria-*`、`data-state`、`open`、以及从 hidden/inactive/collapsed/closed class 或 `display:none` / `visibility:hidden` style 变为可见的 reveal 变化仍应触发补翻。
+31. content script 自动增量翻译不应处理 secondary rail：右侧推荐、趋势、直播、相关内容等侧栏新增内容不发送 `PBT_TRANSLATE_PAGE`，不显示 pending spinner；mutation cache reuse 也不应在该区域自动补回译文；主正文流和普通文档 TOC 侧栏仍可补翻。
 
 ## 第三层：手动浏览器测试
 
@@ -284,10 +289,13 @@
 43. 在普通文档站开启当前 origin 自动翻译后，切到网站自带中文版本 `/zh/` 或 `/zh-cn/`，确认页面不再自动翻译、Network 不新增 provider 请求、右侧按钮显示 `译` 且无绿色勾选，网页自身导航和点击不被卡住。
 44. 在同一多语言站点从中文版本切回英文 lecture 页面，确认 origin 级自动翻译偏好没有被清除，仍可按原偏好继续翻译英文页面。
 45. 在 Twitter/X 等社交页面已翻译后，把鼠标移动到不同评论者头像、用户名或评论区域，确认 hover card、tooltip、popover 不触发 Network provider 请求，也不出现原文旁 spinner。
-46. 在 Twitter/X 页面已翻译后，向下滚动并等待新增可见正文出现，确认会触发既有 provider 请求并自动补翻，新增正文原文旁 spinner 按自动增量请求生命周期显示和隐藏，右侧不出现文字状态条；互动按钮、`K/M` 统计数字和裸域名旁不出现 spinner。
+46. 在 Twitter/X 页面已翻译后，向下滚动并等待新增主正文出现，确认会触发既有 provider 请求并自动补翻，新增正文原文旁 spinner 按自动增量请求生命周期显示和隐藏，右侧不出现文字状态条；互动按钮、`K/M` 统计数字、裸域名以及右侧推荐/趋势/直播/相关 secondary rail 旁不出现插件 spinner，也不会因滚动被自动翻译。
 47. 在 Reddit 等社交/评论页面已翻译后，滚动到末尾或让页面加载更多评论，确认新增可见正文会触发既有 provider 请求并自动补翻，新增原文旁 spinner 会显示并消失；同时确认 hover card、tooltip、popover 不触发 Network provider 请求，也不出现 spinner。
 48. 在 Twitter/X 或 Reddit 评论流已翻译后，向上滚动回到刚才已经翻译过的评论，确认同一条正文不会再次触发 provider 请求，也不会再次显示 spinner；如果页面框架临时移除了译文 marker，插件只在当前页面会话内补回译文。
 49. 在 Twitter/X 页面翻译完成后点击带绿色勾选的 `译` 取消翻译，确认左侧导航列表、左下角账号区域和当前正文都保持原文，不被会话缓存重新翻成中文。
+50. 在 Twitter/X、Reddit 等页面滚动触发自动增量翻译时，如扩展后台响应端口失败或页面刷新导致 runtime message failure，确认原文旁 spinner 会消失，不会长期停在右侧栏或正文旁。
+51. 在 Twitter/X、Reddit 等页面排查“循环控件闪烁”时，不能只凭截图或单次 DOM snapshot 判断；必须在滚动、悬停和等待过程中采样 `[data-pbt-control="translation-pending"]` 与 `[data-pbt-control="translation-pending-spinner"]` 数量，确认是否是插件节点反复创建/删除，并同时检查附近网站原生直播、头像、加载或动画控件是否没有 `data-pbt-control` 标记。
+52. 在 Twitter/X 右侧栏出现直播卡、推荐卡、趋势卡或相关内容卡片时，确认这些 secondary rail 内容不会因自动增量或会话缓存复用被翻译；同一页面主时间线或评论新增正文仍应正常自动补翻。
 
 敏感页面测试：
 

@@ -219,6 +219,10 @@
 19. 旧直接翻译 DOM marker 残留但内存 restore 快照丢失时，插件不得猜测原文或再次翻译中文残留；只能通过当前页面 reload 回到网站原文。
 20. 自然版/深度版严格重试只能重试未通过 output gate 的 segment，不得因单个标题或短段未翻译而把同批已成功正文再次发送给 provider。
 21. 右侧控制入口隐藏偏好只能保存一个全局布尔值，不得保存完整 URL、网页原文、译文正文或 tab 列表。
+22. runtime message failure 必须清理手动翻译按钮 loading 和自动增量原文旁 pending spinner，不得让等待控件无限停留。
+23. 排查等待控件闪烁或残留时，必须用 `data-pbt-control="translation-pending"` / `translation-pending-spinner` 确认插件节点归属；对间歇闪烁必须采样一段滚动、悬停或等待窗口，不能用单帧无残留关闭问题。
+24. `class` / `style` 属性变化只有在确实像隐藏内容变可见时才能触发自动补翻；纯视觉动画、脉冲、高亮或布局刷新不能反复创建 pending spinner。
+25. 自动增量翻译必须跳过右侧推荐、趋势、直播、相关内容等 secondary rail，不得因这些区域滚动刷新或缓存复用发送 provider 请求或创建 pending spinner；主正文流和普通文档 TOC 侧栏仍应保留补翻能力。
 
 ## 审计报告格式
 

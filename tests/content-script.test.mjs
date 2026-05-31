@@ -104,6 +104,44 @@ test("dom collector skips interactive controls and compact social metrics", asyn
   ]);
 });
 
+test("incremental collector skips secondary recommendation rails without changing manual collection", async () => {
+  const document = createDocument();
+  document.body.appendChild(el(document, "article", "Main timeline paragraph."));
+  const sidebar = el(document, "div", "", { "data-testid": "sidebarColumn" });
+  sidebar.appendChild(el(document, "p", "Trending sidebar item."));
+  document.body.appendChild(sidebar);
+
+  const api = await loadContentApi(document, {
+    location: { href: "https://x.com/example/status/1" }
+  });
+  const incremental = api.collectSegments(document, { incremental: true });
+  const manual = api.collectSegments(document);
+
+  assert.deepEqual(Array.from(incremental.segments, (segment) => segment.text), [
+    "Main timeline paragraph."
+  ]);
+  assert.deepEqual(Array.from(manual.segments, (segment) => segment.text), [
+    "Main timeline paragraph.",
+    "Trending sidebar item."
+  ]);
+});
+
+test("incremental collector keeps ordinary document sidebars", async () => {
+  const document = createDocument();
+  const aside = el(document, "aside", "", { "aria-label": "Table of contents", role: "complementary" });
+  aside.appendChild(el(document, "p", "Section navigation paragraph."));
+  document.body.appendChild(aside);
+
+  const api = await loadContentApi(document, {
+    location: { href: "https://docs.example.test/guide/" }
+  });
+  const result = api.collectSegments(document, { incremental: true });
+
+  assert.deepEqual(Array.from(result.segments, (segment) => segment.text), [
+    "Section navigation paragraph."
+  ]);
+});
+
 test("replace renderer replaces once and restores original text", async () => {
   const document = createDocument();
   const paragraph = el(document, "p", "Original paragraph");
@@ -1043,6 +1081,43 @@ test("floating translate button shows spinner while request is pending", async (
   assert.equal(countPendingIndicators(document.body), 0);
 });
 
+test("floating translate clears loading spinner when runtime message fails", async () => {
+  const document = createDocument();
+  const paragraph = el(document, "p", "Original paragraph");
+  document.body.appendChild(paragraph);
+  let api;
+
+  api = await loadContentApi(document, {
+    location: { href: "https://example.com/article" },
+    sendMessage(message, callback) {
+      if (message.type === "PBT_TRANSLATE_PAGE") {
+        api.collectSegments(document, { showPendingIndicators: true });
+        this.lastError = { message: "The message port closed before a response was received." };
+        callback(undefined);
+        this.lastError = null;
+        return;
+      }
+
+      callback({ ok: true });
+    }
+  });
+
+  api.showFloatingTranslateButton({
+    qualityMode: "free",
+    displayMode: "replace",
+    paidProvider: "gemini"
+  });
+
+  const translateButton = findNode(document.body, (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "translate-toggle");
+
+  translateButton.click();
+
+  assert.equal(translateButton.disabled, false);
+  assert.equal(translateButton.hasAttribute("data-pbt-loading"), false);
+  assert.equal(translateButton.textContent, "!");
+  assert.equal(countPendingIndicators(document.body), 0);
+});
+
 test("floating translate paints loading spinner before sending the request", async () => {
   const document = createDocument();
   document.body.appendChild(el(document, "p", "Original paragraph"));
@@ -1584,6 +1659,58 @@ test("floating auto translation shows pending spinner on new source text", async
   assert.equal(countPendingIndicators(document.body), 0);
 });
 
+test("floating auto translation clears pending spinner when runtime message fails", async () => {
+  const document = createDocument();
+  const firstParagraph = el(document, "p", "First paragraph");
+  document.body.appendChild(firstParagraph);
+  const sentMessages = [];
+  let api;
+
+  api = await loadContentApi(document, {
+    location: { href: "https://example.com/lecture" },
+    mutationObserver: true,
+    immediateTimers: true,
+    sendMessage(message, callback) {
+      sentMessages.push(message);
+
+      if (message.type === "PBT_TRANSLATE_PAGE") {
+        api.collectSegments(document, {
+          incremental: message.incremental === true,
+          showPendingIndicators: true
+        });
+        this.lastError = { message: "The message port closed before a response was received." };
+        callback(undefined);
+        this.lastError = null;
+        return;
+      }
+
+      callback({ ok: true });
+    }
+  });
+
+  api.showFloatingTranslateButton({
+    qualityMode: "natural",
+    displayMode: "bilingual",
+    paidProvider: "custom_openai"
+  });
+  const firstCollected = api.collectSegments(document);
+  api.renderTranslations({
+    displayMode: "bilingual",
+    translations: [{ id: firstCollected.segments[0].id, text: "[mock zh] First paragraph" }]
+  });
+
+  const secondParagraph = el(document, "p", "Second paragraph");
+  document.body.appendChild(secondParagraph);
+  api.__mutationObservers[0].trigger([
+    { type: "childList", addedNodes: [secondParagraph], target: document.body }
+  ]);
+
+  assert.equal(sentMessages.length, 1);
+  assert.equal(sentMessages[0].type, "PBT_TRANSLATE_PAGE");
+  assert.equal(sentMessages[0].incremental, true);
+  assert.equal(countPendingIndicators(document.body), 0);
+});
+
 test("floating auto translation uses a short debounce for spa tab changes", async () => {
   const document = createDocument();
   const firstParagraph = el(document, "p", "First paragraph");
@@ -1808,6 +1935,97 @@ test("floating auto translation follows new X scroll content", async () => {
   assert.deepEqual(Array.from(collectedByMessage[0].segments, (segment) => segment.text), [
     "Late X post paragraph should auto translate."
   ]);
+});
+
+test("floating auto translation ignores secondary recommendation rail mutations", async () => {
+  const document = createDocument();
+  const firstParagraph = el(document, "p", "First paragraph");
+  document.body.appendChild(firstParagraph);
+  const sentMessages = [];
+  const timerDelays = [];
+
+  const api = await loadContentApi(document, {
+    location: { href: "https://x.com/example/status/1" },
+    mutationObserver: true,
+    setTimeout(callback, delay) {
+      timerDelays.push(delay);
+      return callback;
+    },
+    clearTimeout() {},
+    sendMessage(message, callback) {
+      sentMessages.push(message);
+      callback({ ok: true, status: "bilingual" });
+    }
+  });
+
+  api.showFloatingTranslateButton({
+    qualityMode: "natural",
+    displayMode: "bilingual",
+    paidProvider: "custom_openai"
+  });
+  const firstCollected = api.collectSegments(document);
+  api.renderTranslations({
+    displayMode: "bilingual",
+    translations: [{ id: firstCollected.segments[0].id, text: "[mock zh] First paragraph" }]
+  });
+
+  const rightRail = el(document, "div", "", { "data-testid": "sidebarColumn" });
+  rightRail.appendChild(el(document, "p", "Live sidebar card should not auto translate."));
+  document.body.appendChild(rightRail);
+  api.__mutationObservers[0].trigger([
+    { type: "childList", addedNodes: [rightRail], target: document.body }
+  ]);
+
+  assert.deepEqual(timerDelays, []);
+  assert.equal(sentMessages.length, 0);
+  assert.equal(countPendingIndicators(document.body), 0);
+});
+
+test("floating auto translation ignores cached reuse inside secondary recommendation rails", async () => {
+  const document = createDocument();
+  const article = el(document, "article", "");
+  article.appendChild(el(document, "p", "Main paragraph."));
+  document.body.appendChild(article);
+  const initialRail = el(document, "div", "", { "data-testid": "sidebarColumn" });
+  initialRail.appendChild(el(document, "p", "Stable sidebar item."));
+  document.body.appendChild(initialRail);
+  const sentMessages = [];
+
+  const api = await loadContentApi(document, {
+    location: { href: "https://x.com/example/status/1" },
+    mutationObserver: true,
+    immediateTimers: true,
+    sendMessage(message, callback) {
+      sentMessages.push(message);
+      callback({ ok: true, status: "bilingual" });
+    }
+  });
+
+  api.showFloatingTranslateButton({
+    qualityMode: "natural",
+    displayMode: "bilingual",
+    paidProvider: "custom_openai"
+  });
+  const firstCollected = api.collectSegments(document);
+  api.renderTranslations({
+    displayMode: "bilingual",
+    translations: Array.from(firstCollected.segments, (segment) => ({
+      id: segment.id,
+      text: segment.text === "Stable sidebar item." ? "稳定侧栏项目。" : "主段落。"
+    }))
+  });
+
+  initialRail.remove();
+  const returningRail = el(document, "div", "", { "data-testid": "sidebarColumn" });
+  returningRail.appendChild(el(document, "p", "Stable sidebar item."));
+  document.body.appendChild(returningRail);
+  api.__mutationObservers[0].trigger([
+    { type: "childList", addedNodes: [returningRail], target: document.body }
+  ]);
+
+  assert.equal(sentMessages.length, 0);
+  assert.equal(returningRail.textContent, "Stable sidebar item.");
+  assert.equal(countPendingIndicators(document.body), 0);
 });
 
 test("floating auto translation reuses cached bilingual translation when virtualized social content returns", async () => {
@@ -2481,6 +2699,7 @@ test("floating translation reruns when hidden content becomes visible", async ()
 
   assert.deepEqual(Array.from(firstCollected.segments, (segment) => segment.text), ["First paragraph"]);
   assert.equal(api.__mutationObservers[0].observerOptions.attributes, true);
+  assert.equal(api.__mutationObservers[0].observerOptions.attributeOldValue, true);
   assert.deepEqual(Array.from(api.__mutationObservers[0].observerOptions.attributeFilter), [
     "class",
     "style",
@@ -2504,6 +2723,94 @@ test("floating translation reruns when hidden content becomes visible", async ()
   assert.equal(sentMessages[0].qualityMode, "free");
   assert.equal(sentMessages[0].displayMode, "bilingual");
   assert.equal(sentMessages[0].url, "https://example.com/faq");
+  assert.equal(sentMessages[0].incremental, true);
+});
+
+test("floating translation ignores cosmetic class and style attribute changes", async () => {
+  const document = createDocument();
+  const firstParagraph = el(document, "p", "First paragraph");
+  document.body.appendChild(firstParagraph);
+  const sentMessages = [];
+
+  const api = await loadContentApi(document, {
+    location: { href: "https://example.com/live" },
+    mutationObserver: true,
+    immediateTimers: true,
+    sendMessage(message, callback) {
+      sentMessages.push(message);
+      callback({ ok: true, status: "bilingual" });
+    }
+  });
+
+  api.showFloatingTranslateButton({
+    qualityMode: "free",
+    displayMode: "bilingual",
+    paidProvider: "custom_openai"
+  });
+  const firstCollected = api.collectSegments(document);
+  api.renderTranslations({
+    displayMode: "bilingual",
+    translations: [{ id: firstCollected.segments[0].id, text: "[mock zh] First paragraph" }]
+  });
+
+  const liveCard = el(document, "aside", "Live stream status");
+  document.body.appendChild(liveCard);
+
+  liveCard.setAttribute("class", "pulse-on");
+  api.__mutationObservers[0].trigger([
+    { type: "attributes", attributeName: "class", oldValue: "pulse-off", target: liveCard }
+  ]);
+
+  liveCard.setAttribute("style", "transform: translateY(1px)");
+  api.__mutationObservers[0].trigger([
+    { type: "attributes", attributeName: "style", oldValue: "transform: translateY(0px)", target: liveCard }
+  ]);
+
+  liveCard.setAttribute("class", "active pulse-2");
+  api.__mutationObservers[0].trigger([
+    { type: "attributes", attributeName: "class", oldValue: "active pulse-1", target: liveCard }
+  ]);
+
+  assert.equal(sentMessages.length, 0);
+  assert.equal(countPendingIndicators(document.body), 0);
+});
+
+test("floating translation reruns when class reveals content", async () => {
+  const document = createDocument();
+  const firstParagraph = el(document, "p", "First paragraph");
+  document.body.appendChild(firstParagraph);
+  const sentMessages = [];
+
+  const api = await loadContentApi(document, {
+    location: { href: "https://example.com/tabs" },
+    mutationObserver: true,
+    immediateTimers: true,
+    sendMessage(message, callback) {
+      sentMessages.push(message);
+      callback({ ok: true, status: "bilingual" });
+    }
+  });
+
+  api.showFloatingTranslateButton({
+    qualityMode: "free",
+    displayMode: "bilingual",
+    paidProvider: "custom_openai"
+  });
+  const firstCollected = api.collectSegments(document);
+  api.renderTranslations({
+    displayMode: "bilingual",
+    translations: [{ id: firstCollected.segments[0].id, text: "[mock zh] First paragraph" }]
+  });
+
+  const tabPanel = el(document, "section", "Active tab paragraph", { class: "hidden" });
+  document.body.appendChild(tabPanel);
+  tabPanel.setAttribute("class", "active");
+  api.__mutationObservers[0].trigger([
+    { type: "attributes", attributeName: "class", oldValue: "hidden", target: tabPanel }
+  ]);
+
+  assert.equal(sentMessages.length, 1);
+  assert.equal(sentMessages[0].type, "PBT_TRANSLATE_PAGE");
   assert.equal(sentMessages[0].incremental, true);
 });
 
