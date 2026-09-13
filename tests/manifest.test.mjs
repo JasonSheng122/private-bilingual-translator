@@ -6,10 +6,11 @@ test("manifest uses only approved permissions", async () => {
   const manifest = JSON.parse(await readFile(new URL("../manifest.json", import.meta.url), "utf8"));
 
   assert.equal(manifest.manifest_version, 3);
-  assert.deepEqual(manifest.permissions, ["activeTab", "storage", "scripting"]);
+  assert.deepEqual(manifest.permissions, ["activeTab", "storage", "scripting", "tabCapture", "offscreen"]);
   assert.deepEqual(manifest.host_permissions, [
     "https://translate.googleapis.com/*",
-    "https://generativelanguage.googleapis.com/*"
+    "https://generativelanguage.googleapis.com/*",
+    "http://127.0.0.1:8765/*"
   ]);
   assert.deepEqual(manifest.optional_host_permissions, ["https://*/*"]);
   assert.deepEqual(manifest.web_accessible_resources, [

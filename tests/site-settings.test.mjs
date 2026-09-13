@@ -50,14 +50,16 @@ test("site settings store translation settings by origin and global defaults", a
     displayMode: "replace",
     qualityMode: "natural",
     paidProvider: "gemini",
-    autoTranslate: true
+    autoTranslate: true,
+    captionSize: null
   });
   assert.deepEqual(otherOriginSettings, {
     siteKey: "https://other.example.com",
     displayMode: "replace",
     qualityMode: "natural",
     paidProvider: "gemini",
-    autoTranslate: false
+    autoTranslate: false,
+    captionSize: null
   });
   assert.equal(storageArea.data.pbt_site_settings_v1.defaultDisplayMode, "replace");
   assert.equal(storageArea.data.pbt_site_settings_v1.defaultQualityMode, "natural");
@@ -89,14 +91,16 @@ test("site settings keep origin overrides while latest choice becomes global def
     displayMode: "replace",
     qualityMode: "natural",
     paidProvider: "gemini",
-    autoTranslate: true
+    autoTranslate: true,
+    captionSize: null
   });
   assert.deepEqual(await getStoredTranslationSettingsForUrl("https://new.example.net/one", storageArea), {
     siteKey: "https://new.example.net",
     displayMode: "bilingual",
     qualityMode: "deep",
     paidProvider: "custom_openai",
-    autoTranslate: false
+    autoTranslate: false,
+    captionSize: null
   });
 });
 
@@ -124,8 +128,38 @@ test("site settings preserve auto translate when popup updates translation prefe
     displayMode: "replace",
     qualityMode: "deep",
     paidProvider: "gemini",
-    autoTranslate: true
+    autoTranslate: true,
+    captionSize: null
   });
+});
+
+test("site settings store caption size by origin and keep it when other preferences are saved", async () => {
+  const storageArea = makeStorageArea();
+
+  const saved = await saveTranslationSettingsForUrl({
+    url: "https://www.youtube.com/watch?v=one",
+    displayMode: "bilingual",
+    qualityMode: "free",
+    paidProvider: "gemini",
+    captionSize: "large"
+  }, storageArea);
+  await saveTranslationSettingsForUrl({
+    url: "https://www.youtube.com/watch?v=two",
+    displayMode: "replace",
+    qualityMode: "free",
+    paidProvider: "gemini"
+  }, storageArea);
+  await saveTranslationSettingsForUrl({
+    url: "https://example.com/article",
+    displayMode: "bilingual",
+    qualityMode: "free",
+    paidProvider: "gemini",
+    captionSize: "not-a-size"
+  }, storageArea);
+
+  assert.equal(saved.captionSize, "large");
+  assert.equal((await getStoredTranslationSettingsForUrl("https://www.youtube.com/watch?v=three", storageArea)).captionSize, "large");
+  assert.equal((await getStoredTranslationSettingsForUrl("https://other.example.net/", storageArea)).captionSize, "large");
 });
 
 test("site settings store global floating controls hidden preference", async () => {

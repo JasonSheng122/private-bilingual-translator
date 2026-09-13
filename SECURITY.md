@@ -20,6 +20,7 @@ The extension is designed around these constraints:
 8. No source text or translated text in logs.
 9. No silent provider fallback.
 10. Sensitive domains blocked before text collection.
+11. The YouTube `幕` experiment reads the URL of the caption request the YouTube player already made (Resource Timing API only: URLs, no response bodies, no request interception, no MAIN-world script) and re-requests the current video's English JSON3 track from the same-origin `/api/timedtext` endpoint with `credentials: "omit"`. If no request was observed, an ordinary user click may click the existing player CC button once and click it again to restore the previous state. Caption request URLs (which carry the player token), sentences and translations stay in page memory only; overlay diagnostics expose sanitized status values, times and counts, not caption text. It does not read the captions/autotranslate menu, select languages, request YouTube auto-translation, or use extension API Keys, `youtubei`, YouTube Data API, telemetry, or third-party subtitle services. The optional local Whisper fallback is the only audio-capture exception and only runs when the video has no readable English caption track: it captures short chunks from the current tab and sends them only to `http://127.0.0.1:8765/transcribe`; the local helper binds loopback and does not expose browser CORS.
 
 ## Reporting a Vulnerability
 

@@ -104,6 +104,17 @@
 26. 真实 Chrome 中排查 spinner 闪烁或残留时，必须确认可疑控件是否带 `data-pbt-control="translation-pending"` 或 `translation-pending-spinner`；网站原生直播、头像、加载或动画控件不能当作插件等待控件，但间歇出现的插件 pending 节点必须按时间窗口继续追根因。
 27. 直播卡、推荐卡、动态侧栏或普通容器的纯视觉 `class` / `style` 刷新不会触发自动增量翻译或 pending spinner；隐藏内容真正变为可见时仍能补翻。
 28. Twitter/X、Reddit 等社交/内容流页面的主正文新增内容仍会自动补翻；右侧推荐、趋势、直播、相关内容等 secondary rail 不因滚动刷新或会话缓存复用自动翻译，也不创建 pending spinner。
+29. YouTube 字幕实验功能只在 `youtube.com/watch` 的视频右下角显示 `幕` 按钮；普通点击通过同 tab content script 放行字幕轨道读取，必要时点击播放器 CC 一次并恢复；只有 `Alt/Option` + `幕` 才放行本机 ASR fallback；中文结果显示在视频底部 overlay。
+30. runtime failure、后台长时间无响应或加载中再次点击不会让 `幕` 无限转圈；取消或 timeout 后旧请求不落地、英文预览被清理；失败态显示可见中文提示。
+31. 底部 overlay 只按主 video `currentTime` 显示当前句：边界切换准确，句间空隙隐藏；控制条隐藏、暂停、拖动、变速后仍同步；广告期间隐藏；站内切换视频后旧字幕立即清理。
+32. 字幕显示期间播放器自带字幕被隐藏，关闭 `幕` 后恢复；扩展打开的 CC 在读取后已关回。
+33. 切换设置里的“双语翻译 / 直接翻译”后，底部字幕立即在“中文 + 英文”和“只显示中文”之间切换，且不重新翻译；切换翻译质量或供应商后立即补翻当前段落，新译文返回前保留旧译文；自然版/深度版缺少 Key 或 Key 被拒绝时显示中文提示。
+34. 普通、影院和全屏模式下底部字幕和 `幕` 按钮都可见；字号随播放器缩放，控制条自动隐藏时字幕下移；点击 `幕` 不会让视频暂停或进入/退出全屏；“YouTube 字幕大小”四档立即生效，刷新页面后保留。
+33. 默认不读取音频、不做 OCR，不请求 YouTube Data API、`youtubei`、YouTube 自动翻译或第三方字幕服务，不注入页面脚本、不拦截页面请求；Network 面板中扩展只请求当前视频同源 `/api/timedtext` 英文轨道和用户选择的 provider。
+34. YouTube overlay no-render 失败必须显示净化中文原因，内部 diagnostics 只包含错误码、状态和数量。
+35. 同步排查时读取 overlay 或 `幕` 按钮的 `data-pbt-sync-*`：播放时间应落在当前句起止之间；诊断不得包含字幕正文、译文、字幕请求地址、完整 URL 或 API Key。没有真实页面诊断时，不得把自动测试通过写成完整 Chrome 验收通过。
+36. 本机 Whisper fallback 只在 `Alt/Option` + `幕` 且没有可读英文字幕轨道时使用 `tabCapture` / `offscreen` 和固定本机 endpoint `http://127.0.0.1:8765/transcribe`；`data-pbt-local-asr-*` 不包含音频、ASR 原文或正文。
+37. `幕` 请求 in-flight 期间，页面大量 mutation 不应触发普通网页正文自动增量重扫。
 
 ## 文档检查
 

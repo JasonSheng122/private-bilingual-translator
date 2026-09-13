@@ -47,7 +47,7 @@
 
 通过条件：
 
-1. 所有网络请求都在 provider 模块内。
+1. 所有 provider 网络请求都在 provider 模块内；例外只允许 content script 在 YouTube watch 页、由同 tab content script 显式放行后，基于播放器已发出的当前视频字幕请求地址（资源计时接口只读地址，不拦截请求、不注入页面脚本）请求同源 `/api/timedtext` 英文轨道，`credentials: "omit"`；普通 `幕` 点击只允许在没有观察到请求时点击播放器现有 CC 按钮一次并恢复，不读取字幕/自动翻译菜单、不请求 YouTube 自动翻译、不新增网络目的地。本机 Whisper 例外只允许 background 的本机 Whisper 请求模块访问 `http://127.0.0.1:8765/transcribe`。
 2. 每个 provider 有网络白名单。
 3. 不静默切换供应商。
 4. 没有 analytics endpoint。

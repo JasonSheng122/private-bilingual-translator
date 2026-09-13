@@ -142,6 +142,1066 @@ test("incremental collector keeps ordinary document sidebars", async () => {
   ]);
 });
 
+test("youtube transcript explicit clear removes stale sync diagnostics from button", async () => {
+  const fixture = createYouTubeWatchFixture({ currentTime: 3 });
+  const api = await loadYouTubeCaptionApi(fixture, {
+    fetch: createYouTubeCaptionFetch({ en: manualCaptionFixturePayload() })
+  });
+
+  api.showFloatingTranslateButton({ qualityMode: "free", displayMode: "bilingual", paidProvider: "gemini" });
+  const button = findYouTubeControl(fixture.document, "youtube-transcript-toggle");
+  const collected = await api.collectYouTubeTranscriptSegmentsForTranslation({
+    doc: fixture.document,
+    allowYouTubeCaptionTrack: true
+  });
+
+  api.renderYouTubeTranscriptTranslations({ translations: manualCaptionFixtureTranslations(collected.segments) });
+
+  assert.equal(button.getAttribute("data-pbt-sync-source"), "caption_track");
+  assert.equal(button.getAttribute("data-pbt-sync-status"), "translated");
+  assert.equal(button.getAttribute("data-pbt-active"), "true");
+
+  api.clearYouTubeTranscriptTranslations();
+
+  assert.equal(button.hasAttribute("data-pbt-sync-source"), false);
+  assert.equal(button.hasAttribute("data-pbt-sync-status"), false);
+  assert.equal(button.getAttribute("data-pbt-active"), "false");
+  assert.equal(findYouTubeOverlay(fixture.document), null);
+  assert.equal(findYouTubeControl(fixture.document, "youtube-native-caption-style"), null);
+});
+
+test("youtube transcript in-flight mutations do not run ordinary page rescans", async () => {
+  const document = createDocument();
+  const player = el(document, "div", "", { id: "movie_player" });
+  const sentMessages = [];
+  const poisonNode = {
+    nodeType: 1,
+    ownerDocument: document,
+    tagName: "DIV",
+    get childNodes() {
+      throw new Error("ordinary mutation scan should be deferred");
+    },
+    getAttribute() {
+      return null;
+    },
+    hasAttribute() {
+      return false;
+    }
+  };
+
+  player.rect = { left: 80, top: 40, right: 880, bottom: 520, width: 800, height: 480 };
+  document.body.appendChild(player);
+
+  const api = await loadContentApi(document, {
+    location: { href: "https://www.youtube.com/watch?v=test-video" },
+    mutationObserver: true,
+    sendMessage(message, callback) {
+      sentMessages.push(message);
+
+      if (message.type === "PBT_TRANSLATE_YOUTUBE_TRANSCRIPT") {
+        return;
+      }
+
+      callback({ ok: true });
+    }
+  });
+
+  api.showFloatingTranslateButton({ qualityMode: "free", displayMode: "bilingual", paidProvider: "gemini" });
+  const button = findNode(
+    document.body,
+    (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "youtube-transcript-toggle"
+  );
+
+  button.click();
+
+  assert.equal(button.getAttribute("data-pbt-loading"), "youtube-transcript");
+  assert.doesNotThrow(() => {
+    api.__mutationObservers[0].trigger([
+      { type: "childList", addedNodes: [poisonNode], target: document.body }
+    ]);
+  });
+  assert.deepEqual(sentMessages.map((message) => message.type), ["PBT_TRANSLATE_YOUTUBE_TRANSCRIPT"]);
+  assert.equal(sentMessages[0].allowLongVideoAutoOpen, undefined);
+  assert.equal(sentMessages[0].allowYouTubeVisibleCaptionLayer, undefined);
+  assert.equal(sentMessages[0].allowYouTubeLocalWhisperAsr, undefined);
+  assert.equal(sentMessages[0].allowYouTubeCaptionTrack, true);
+  assert.equal(sentMessages[0].allowYouTubePlayerCaptionToggle, true);
+});
+
+test("youtube transcript floating button only sends transcript-specific translate messages", async () => {
+  const document = createDocument();
+  const player = el(document, "div", "", { id: "movie_player" });
+  player.rect = { left: 80, top: 40, right: 880, bottom: 520, width: 800, height: 480 };
+  document.body.appendChild(player);
+  const sentMessages = [];
+  const api = await loadContentApi(document, {
+    location: { href: "https://www.youtube.com/watch?v=test-video" },
+    sendMessage(message, callback) {
+      sentMessages.push(message);
+      callback({ ok: true, status: "translated", renderedCount: 1 });
+    }
+  });
+
+  api.showFloatingTranslateButton({ qualityMode: "free", displayMode: "bilingual", paidProvider: "gemini" });
+  const button = findNode(
+    document.body,
+    (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "youtube-transcript-toggle"
+  );
+  const rail = findNode(
+    document.body,
+    (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "floating-rail"
+  );
+
+  assert.equal(button.style.display, "inline-flex");
+  assert.equal(button.parentNode, player);
+  assert.equal(rail.contains(button), false);
+  button.click();
+  assert.equal(sentMessages.at(-1).type, "PBT_TRANSLATE_YOUTUBE_TRANSCRIPT");
+  assert.equal(sentMessages.at(-1).qualityMode, "free");
+  assert.equal(sentMessages.at(-1).requestId, 1);
+  assert.equal(sentMessages.at(-1).allowLongVideoAutoOpen, undefined);
+  assert.equal(sentMessages.at(-1).allowYouTubeVisibleCaptionLayer, undefined);
+  assert.equal(sentMessages.at(-1).allowYouTubeLocalWhisperAsr, undefined);
+  assert.equal(sentMessages.at(-1).allowYouTubeCaptionTrack, true);
+  assert.equal(sentMessages.at(-1).allowYouTubePlayerCaptionToggle, true);
+  assert.equal(sentMessages.at(-1).preserveExistingYouTubeTranscriptOverlay, undefined);
+  assert.equal(Object.hasOwn(sentMessages.at(-1), "apiKey"), false);
+  assert.equal(button.getAttribute("data-pbt-local-asr-state"), "idle");
+  assert.equal(button.getAttribute("data-pbt-local-asr-request-id"), "none");
+});
+
+test("youtube transcript ordinary click does not expose local Whisper fallback errors", async () => {
+  const document = createDocument();
+  const player = el(document, "div", "", { id: "movie_player" });
+  const sentMessages = [];
+  player.rect = { left: 80, top: 40, right: 880, bottom: 520, width: 800, height: 480 };
+  document.body.appendChild(player);
+  const api = await loadContentApi(document, {
+    location: { href: "https://www.youtube.com/watch?v=test-video" },
+    sendMessage(message, callback) {
+      sentMessages.push(message);
+      callback({
+        ok: false,
+        error: {
+          code: "youtube_local_asr_whisper_unavailable",
+          message: "Local Whisper is not reachable."
+        }
+      });
+    }
+  });
+
+  api.showFloatingTranslateButton({ qualityMode: "free", displayMode: "bilingual", paidProvider: "gemini" });
+  const button = findNode(
+    document.body,
+    (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "youtube-transcript-toggle"
+  );
+
+  button.click();
+
+  const hint = findNode(
+    document.body,
+    (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "youtube-transcript-hint"
+  );
+
+  assert.equal(sentMessages.length, 1);
+  assert.equal(sentMessages[0].allowYouTubeLocalWhisperAsr, undefined);
+  assert.equal(sentMessages[0].allowYouTubePlayerCaptionToggle, true);
+  assert.equal(button.getAttribute("data-pbt-local-asr-state"), "idle");
+  assert.equal(button.getAttribute("data-pbt-local-asr-error"), "none");
+  assert.doesNotMatch(hint.textContent, /Whisper/);
+  assert.doesNotMatch(hint.textContent, /127\.0\.0\.1:8765/);
+  assert.match(hint.textContent, /没有读到 YouTube 字幕/);
+});
+
+test("youtube transcript floating button starts local Whisper ASR fallback only on Alt click and stops it on second click", async () => {
+  const document = createDocument();
+  const player = el(document, "div", "", { id: "movie_player" });
+  const video = el(document, "video", "");
+  const sentMessages = [];
+
+  player.rect = { left: 80, top: 40, right: 880, bottom: 520, width: 800, height: 480 };
+  video.currentTime = 1500;
+  video.duration = 8583;
+  player.appendChild(video);
+  document.body.appendChild(player);
+
+  const api = await loadContentApi(document, {
+    location: { href: "https://www.youtube.com/watch?v=test-video" },
+    sendMessage(message, callback) {
+      sentMessages.push(message);
+
+      if (message.type === "PBT_TRANSLATE_YOUTUBE_TRANSCRIPT") {
+        callback({ ok: true, status: "local_asr_started" });
+        return;
+      }
+
+      if (message.type === "PBT_STOP_YOUTUBE_LOCAL_ASR") {
+        callback({ ok: true, status: "local_asr_stopped" });
+        return;
+      }
+
+      callback({ ok: true });
+    }
+  });
+
+  api.showFloatingTranslateButton({ qualityMode: "free", displayMode: "bilingual", paidProvider: "gemini" });
+  const button = findNode(
+    document.body,
+    (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "youtube-transcript-toggle"
+  );
+
+  button.click({ altKey: true });
+
+  const hint = findNode(
+    document.body,
+    (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "youtube-transcript-hint"
+  );
+
+  assert.equal(sentMessages[0].type, "PBT_TRANSLATE_YOUTUBE_TRANSCRIPT");
+  assert.equal(sentMessages[0].allowYouTubeVisibleCaptionLayer, undefined);
+  assert.equal(sentMessages[0].allowYouTubeLocalWhisperAsr, true);
+  assert.equal(sentMessages[0].allowYouTubeCaptionTrack, true);
+  assert.equal(sentMessages[0].allowYouTubePlayerCaptionToggle, true);
+  assert.equal(button.getAttribute("data-pbt-runtime-version"), "t120-youtube-caption-layout-v2");
+  assert.equal(hint.getAttribute("data-pbt-runtime-version"), "t120-youtube-caption-layout-v2");
+  assert.equal(button.getAttribute("data-pbt-local-asr-state"), "local-asr-started");
+  assert.equal(button.getAttribute("data-pbt-local-asr-error"), "none");
+  assert.equal(button.getAttribute("data-pbt-local-asr-active"), "true");
+  assert.equal(button.getAttribute("data-pbt-local-asr-request-id"), "1");
+  assert.equal(button.getAttribute("data-pbt-local-asr-video-muted"), "false");
+  assert.equal(button.getAttribute("data-pbt-local-asr-video-paused"), "false");
+  assert.equal(hint.getAttribute("data-pbt-local-asr-state"), "local-asr-started");
+  assert.match(hint.textContent, /本机 Whisper/);
+
+  const rendered = api.renderYouTubeLocalAsrTranslation({
+    requestId: 1,
+    id: "asr-1",
+    sourceText: "do not bring me flowers anymore",
+    translatedText: "别再给我送花了"
+  });
+  const overlay = findNode(
+    document.body,
+    (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "youtube-transcript-overlay"
+  );
+
+  assert.equal(rendered.ok, true);
+  assert.equal(rendered.renderedCount, 1);
+  assert.equal(overlay.getAttribute("data-pbt-local-asr-state"), "rendered");
+  assert.equal(overlay.getAttribute("data-pbt-local-asr-error"), "none");
+  assert.equal(overlay.getAttribute("data-pbt-local-asr-active"), "true");
+  assert.equal(overlay.getAttribute("data-pbt-local-asr-request-id"), "1");
+  assert.equal(
+    overlay.textContent,
+    youtubeOverlayText("别再给我送花了", "do not bring me flowers anymore")
+  );
+  assert.equal(overlay.getAttribute("data-pbt-sync-source"), "local_asr");
+  assert.equal(overlay.getAttribute("data-pbt-sync-track"), "local_asr");
+
+  button.click();
+
+  assert.equal(sentMessages.at(-1).type, "PBT_STOP_YOUTUBE_LOCAL_ASR");
+  assert.equal(button.getAttribute("data-pbt-local-asr-state"), "stopped");
+  assert.equal(button.getAttribute("data-pbt-local-asr-active"), "false");
+  assert.equal(
+    findNode(document.body, (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "youtube-transcript-overlay"),
+    null
+  );
+});
+
+test("youtube local ASR clears session id for terminal status and rejects late render", async () => {
+  const document = createDocument();
+  const player = el(document, "div", "", { id: "movie_player" });
+  const video = el(document, "video", "");
+  const sentMessages = [];
+
+  player.rect = { left: 80, top: 40, right: 880, bottom: 520, width: 800, height: 480 };
+  video.currentTime = 1500;
+  video.duration = 8583;
+  player.appendChild(video);
+  document.body.appendChild(player);
+
+  const api = await loadContentApi(document, {
+    location: { href: "https://www.youtube.com/watch?v=test-video" },
+    sendMessage(message, callback) {
+      sentMessages.push(message);
+      callback({ ok: true, status: "local_asr_started" });
+    }
+  });
+
+  api.showFloatingTranslateButton({ qualityMode: "free", displayMode: "bilingual", paidProvider: "gemini" });
+  const button = findNode(
+    document.body,
+    (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "youtube-transcript-toggle"
+  );
+
+  button.click({ altKey: true });
+
+  const status = api.handleYouTubeLocalAsrStatus({
+    requestId: 1,
+    error: { code: "youtube_local_asr_no_audio_chunk", message: "No audio chunk." },
+    active: false
+  });
+  const lateRender = api.renderYouTubeLocalAsrTranslation({
+    requestId: 1,
+    id: "asr-late",
+    sourceText: "late local asr text",
+    translatedText: "过期字幕"
+  });
+
+  assert.equal(status.ok, true);
+  assert.equal(lateRender.ok, false);
+  assert.equal(lateRender.error.code, "stale_youtube_local_asr_request");
+  assert.equal(button.getAttribute("data-pbt-local-asr-state"), "render-stale");
+  assert.equal(button.getAttribute("data-pbt-local-asr-error"), "stale_youtube_local_asr_request");
+  assert.equal(button.getAttribute("data-pbt-local-asr-active"), "false");
+  assert.equal(
+    findNode(document.body, (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "youtube-transcript-overlay"),
+    null
+  );
+});
+
+test("youtube local ASR clears pending session id when caption translation succeeds", async () => {
+  const document = createDocument();
+  const player = el(document, "div", "", { id: "movie_player" });
+  const captionWindow = el(document, "div", "");
+  const captionSegment = el(document, "span", "current english caption");
+  const sentMessages = [];
+
+  player.rect = { left: 80, top: 40, right: 880, bottom: 520, width: 800, height: 480 };
+  captionWindow.setAttribute("class", "caption-window");
+  captionSegment.setAttribute("class", "ytp-caption-segment");
+  captionWindow.appendChild(captionSegment);
+  player.appendChild(captionWindow);
+  document.body.appendChild(player);
+
+  const api = await loadContentApi(document, {
+    location: { href: "https://www.youtube.com/watch?v=test-video" },
+    sendMessage(message, callback) {
+      sentMessages.push(message);
+      callback({ ok: true, status: "translated", renderedCount: 1 });
+    }
+  });
+
+  api.showFloatingTranslateButton({ qualityMode: "free", displayMode: "bilingual", paidProvider: "gemini" });
+  const button = findNode(
+    document.body,
+    (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "youtube-transcript-toggle"
+  );
+
+  button.click();
+
+  const lateRender = api.renderYouTubeLocalAsrTranslation({
+    requestId: 1,
+    id: "asr-late",
+    sourceText: "late local asr text",
+    translatedText: "过期字幕"
+  });
+
+  assert.equal(sentMessages[0].allowYouTubeLocalWhisperAsr, undefined);
+  assert.equal(lateRender.ok, false);
+  assert.equal(lateRender.error.code, "stale_youtube_local_asr_request");
+  assert.equal(button.getAttribute("data-pbt-local-asr-state"), "render-stale");
+  assert.equal(button.getAttribute("data-pbt-local-asr-active"), "false");
+});
+
+test("youtube transcript floating button warns before local Whisper when video is muted", async () => {
+  const document = createDocument();
+  const player = el(document, "div", "", { id: "movie_player" });
+  const video = el(document, "video", "");
+  const sentMessages = [];
+
+  player.rect = { left: 80, top: 40, right: 880, bottom: 520, width: 800, height: 480 };
+  video.currentTime = 1500;
+  video.duration = 8583;
+  video.muted = true;
+  video.volume = 1;
+  video.paused = false;
+  player.appendChild(video);
+  document.body.appendChild(player);
+
+  const api = await loadContentApi(document, {
+    location: { href: "https://www.youtube.com/watch?v=test-video" },
+    sendMessage(message, callback) {
+      sentMessages.push(message);
+      callback({
+        ok: false,
+        error: {
+          code: "youtube_local_asr_video_muted",
+          message: "当前 YouTube 视频处于静音状态；请先取消静音，再点“幕”使用本机 Whisper。"
+        }
+      });
+    }
+  });
+
+  api.showFloatingTranslateButton({ qualityMode: "free", displayMode: "bilingual", paidProvider: "gemini" });
+  const button = findNode(
+    document.body,
+    (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "youtube-transcript-toggle"
+  );
+
+  button.click({ altKey: true });
+
+  const hint = findNode(
+    document.body,
+    (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "youtube-transcript-hint"
+  );
+
+  assert.equal(sentMessages.length, 1);
+  assert.equal(sentMessages[0].allowYouTubeCaptionTrack, true);
+  assert.equal(sentMessages[0].allowYouTubeVisibleCaptionLayer, undefined);
+  assert.equal(sentMessages[0].allowYouTubeLocalWhisperAsr, true);
+  assert.equal(button.hasAttribute("data-pbt-loading"), false);
+  assert.equal(button.textContent, "!");
+  assert.equal(button.getAttribute("data-pbt-local-asr-state"), "preflight-muted");
+  assert.equal(button.getAttribute("data-pbt-local-asr-error"), "youtube_local_asr_video_muted");
+  assert.equal(button.getAttribute("data-pbt-local-asr-active"), "false");
+  assert.equal(button.getAttribute("data-pbt-local-asr-request-id"), "1");
+  assert.equal(button.getAttribute("data-pbt-local-asr-video-muted"), "true");
+  assert.equal(button.getAttribute("data-pbt-local-asr-video-paused"), "false");
+  assert.equal(hint.getAttribute("data-pbt-local-asr-state"), "preflight-muted");
+  assert.match(hint.textContent, /静音/);
+  assert.match(hint.textContent, /再点“幕”/);
+});
+
+test("youtube transcript floating button warns before local Whisper when video is paused", async () => {
+  const document = createDocument();
+  const player = el(document, "div", "", { id: "movie_player" });
+  const video = el(document, "video", "");
+  const sentMessages = [];
+
+  player.rect = { left: 80, top: 40, right: 880, bottom: 520, width: 800, height: 480 };
+  video.currentTime = 1500;
+  video.duration = 8583;
+  video.muted = false;
+  video.volume = 1;
+  video.paused = true;
+  player.appendChild(video);
+  document.body.appendChild(player);
+
+  const api = await loadContentApi(document, {
+    location: { href: "https://www.youtube.com/watch?v=test-video" },
+    sendMessage(message, callback) {
+      sentMessages.push(message);
+      callback({
+        ok: false,
+        error: {
+          code: "youtube_local_asr_video_paused",
+          message: "当前 YouTube 视频已暂停；请先播放视频，再点“幕”使用本机 Whisper。"
+        }
+      });
+    }
+  });
+
+  api.showFloatingTranslateButton({ qualityMode: "free", displayMode: "bilingual", paidProvider: "gemini" });
+  const button = findNode(
+    document.body,
+    (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "youtube-transcript-toggle"
+  );
+
+  button.click({ altKey: true });
+
+  const hint = findNode(
+    document.body,
+    (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "youtube-transcript-hint"
+  );
+
+  assert.equal(sentMessages.length, 1);
+  assert.equal(sentMessages[0].allowYouTubeCaptionTrack, true);
+  assert.equal(sentMessages[0].allowYouTubeVisibleCaptionLayer, undefined);
+  assert.equal(sentMessages[0].allowYouTubeLocalWhisperAsr, true);
+  assert.equal(button.hasAttribute("data-pbt-loading"), false);
+  assert.equal(button.getAttribute("data-pbt-local-asr-state"), "preflight-paused");
+  assert.equal(button.getAttribute("data-pbt-local-asr-error"), "youtube_local_asr_video_paused");
+  assert.equal(button.getAttribute("data-pbt-local-asr-video-muted"), "false");
+  assert.equal(button.getAttribute("data-pbt-local-asr-video-paused"), "true");
+  assert.equal(hint.getAttribute("data-pbt-local-asr-state"), "preflight-paused");
+  assert.match(hint.textContent, /已暂停/);
+});
+
+test("content script replaces stale runtime instead of returning early", async () => {
+  const document = createDocument();
+  const staleButton = el(document, "button", "幕", {
+    "data-pbt-control": "youtube-transcript-toggle"
+  });
+  document.body.appendChild(staleButton);
+
+  const api = await loadContentApi(document, {
+    location: { href: "https://www.youtube.com/watch?v=test-video" },
+    beforeRun(sandbox) {
+      sandbox.PrivateBilingualTranslatorContent = { __runtimeVersion: "old-runtime" };
+      sandbox.__PBT_CONTENT_LISTENER_ATTACHED__ = true;
+    }
+  });
+
+  api.showFloatingTranslateButton({ qualityMode: "free", displayMode: "bilingual", paidProvider: "gemini" });
+  const button = findNode(
+    document.body,
+    (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "youtube-transcript-toggle"
+  );
+
+  assert.equal(api.__runtimeVersion, "t120-youtube-caption-layout-v2");
+  assert.equal(staleButton.parentNode, null);
+  assert.notEqual(button, null);
+  assert.equal(button.getAttribute("data-pbt-runtime-version"), "t120-youtube-caption-layout-v2");
+  assert.equal(button.getAttribute("data-pbt-local-asr-state"), "idle");
+});
+
+test("youtube transcript floating button clears loading when runtime message fails", async () => {
+  const document = createDocument();
+  const player = el(document, "div", "", { id: "movie_player" });
+  player.rect = { left: 80, top: 40, right: 880, bottom: 520, width: 800, height: 480 };
+  document.body.appendChild(player);
+  const api = await loadContentApi(document, {
+    location: { href: "https://www.youtube.com/watch?v=test-video" },
+    sendMessage(message, callback) {
+      if (message.type === "PBT_TRANSLATE_YOUTUBE_TRANSCRIPT") {
+        this.lastError = { message: "The message port closed before a response was received." };
+        callback(undefined);
+        this.lastError = null;
+        return;
+      }
+
+      callback({ ok: true });
+    }
+  });
+
+  api.showFloatingTranslateButton({ qualityMode: "free", displayMode: "bilingual", paidProvider: "gemini" });
+  const button = findNode(
+    document.body,
+    (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "youtube-transcript-toggle"
+  );
+
+  button.click({ altKey: true });
+
+  assert.equal(button.disabled, false);
+  assert.equal(button.hasAttribute("data-pbt-loading"), false);
+  assert.equal(button.textContent, "!");
+});
+
+test("youtube transcript floating button does not tell users to click the extension action for local ASR capture denial", async () => {
+  const document = createDocument();
+  const player = el(document, "div", "", { id: "movie_player" });
+  player.rect = { left: 80, top: 40, right: 880, bottom: 520, width: 800, height: 480 };
+  document.body.appendChild(player);
+  const api = await loadContentApi(document, {
+    location: { href: "https://www.youtube.com/watch?v=test-video" },
+    sendMessage(message, callback) {
+      if (message.type === "PBT_TRANSLATE_YOUTUBE_TRANSCRIPT") {
+        callback({
+          ok: false,
+          error: {
+            code: "youtube_local_asr_active_tab_required",
+            message: "Chrome requires an extension invocation before tab audio capture."
+          }
+        });
+        return;
+      }
+
+      callback({ ok: true });
+    }
+  });
+
+  api.showFloatingTranslateButton({ qualityMode: "free", displayMode: "bilingual", paidProvider: "gemini" });
+  const button = findNode(
+    document.body,
+    (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "youtube-transcript-toggle"
+  );
+
+  button.click({ altKey: true });
+
+  const hint = findNode(
+    document.body,
+    (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "youtube-transcript-hint"
+  );
+
+  assert.equal(button.disabled, false);
+  assert.equal(button.hasAttribute("data-pbt-loading"), false);
+  assert.equal(button.textContent, "!");
+  assert.doesNotMatch(hint.textContent, /扩展工具栏/);
+  assert.doesNotMatch(hint.textContent, /Private Bilingual Translator/);
+  assert.match(hint.textContent, /YouTube 标签页激活/);
+  assert.match(hint.textContent, /再点“幕”/);
+});
+
+test("youtube transcript floating button shows local Whisper chunk failures after ASR starts", async () => {
+  const document = createDocument();
+  const player = el(document, "div", "", { id: "movie_player" });
+  const sentMessages = [];
+  player.rect = { left: 80, top: 40, right: 880, bottom: 520, width: 800, height: 480 };
+  document.body.appendChild(player);
+  const api = await loadContentApi(document, {
+    location: { href: "https://www.youtube.com/watch?v=test-video" },
+    sendMessage(message, callback) {
+      sentMessages.push(message);
+
+      if (message.type === "PBT_TRANSLATE_YOUTUBE_TRANSCRIPT") {
+        callback({ ok: true, status: "local_asr_started" });
+        return;
+      }
+
+      callback({ ok: true });
+    }
+  });
+
+  api.showFloatingTranslateButton({ qualityMode: "free", displayMode: "bilingual", paidProvider: "gemini" });
+  const button = findNode(
+    document.body,
+    (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "youtube-transcript-toggle"
+  );
+
+  button.click({ altKey: true });
+  const reported = api.handleYouTubeLocalAsrStatus({
+    requestId: 1,
+    active: false,
+    error: {
+      code: "youtube_local_asr_whisper_unavailable",
+      message: "Local Whisper is not reachable."
+    }
+  });
+  const hint = findNode(
+    document.body,
+    (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "youtube-transcript-hint"
+  );
+
+  assert.equal(reported.ok, true);
+  assert.equal(button.textContent, "!");
+  assert.equal(button.getAttribute("data-pbt-local-asr-state"), "whisper-unavailable");
+  assert.equal(button.getAttribute("data-pbt-local-asr-error"), "youtube_local_asr_whisper_unavailable");
+  assert.equal(button.getAttribute("data-pbt-local-asr-active"), "false");
+  assert.equal(hint.getAttribute("data-pbt-local-asr-state"), "whisper-unavailable");
+  assert.match(hint.textContent, /本机 Whisper 服务没有响应/);
+  assert.match(hint.textContent, /127\.0\.0\.1:8765/);
+  assert.equal(sentMessages[0].allowYouTubeLocalWhisperAsr, true);
+});
+
+test("youtube transcript floating button shows local Whisper processing and missing audio chunk statuses", async () => {
+  const document = createDocument();
+  const player = el(document, "div", "", { id: "movie_player" });
+  player.rect = { left: 80, top: 40, right: 880, bottom: 520, width: 800, height: 480 };
+  document.body.appendChild(player);
+  const api = await loadContentApi(document, {
+    location: { href: "https://www.youtube.com/watch?v=test-video" },
+    sendMessage(message, callback) {
+      if (message.type === "PBT_TRANSLATE_YOUTUBE_TRANSCRIPT") {
+        callback({ ok: true, status: "local_asr_started" });
+        return;
+      }
+
+      callback({ ok: true });
+    }
+  });
+
+  api.showFloatingTranslateButton({ qualityMode: "free", displayMode: "bilingual", paidProvider: "gemini" });
+  const button = findNode(
+    document.body,
+    (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "youtube-transcript-toggle"
+  );
+
+  button.click({ altKey: true });
+  const processing = api.handleYouTubeLocalAsrStatus({
+    requestId: 1,
+    active: true,
+    error: {
+      code: "youtube_local_asr_processing",
+      message: "Local Whisper is processing the current audio chunk."
+    }
+  });
+  let hint = findNode(
+    document.body,
+    (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "youtube-transcript-hint"
+  );
+
+  assert.equal(processing.ok, true);
+  assert.equal(button.getAttribute("data-pbt-local-asr-state"), "processing");
+  assert.equal(button.getAttribute("data-pbt-local-asr-error"), "youtube_local_asr_processing");
+  assert.equal(button.getAttribute("data-pbt-local-asr-active"), "true");
+  assert.equal(hint.getAttribute("data-pbt-local-asr-state"), "processing");
+  assert.match(hint.textContent, /正在识别当前音频片段/);
+
+  const noSpeech = api.handleYouTubeLocalAsrStatus({
+    requestId: 1,
+    active: true,
+    error: {
+      code: "youtube_local_asr_no_speech",
+      message: "Local Whisper did not return readable speech."
+    }
+  });
+  hint = findNode(
+    document.body,
+    (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "youtube-transcript-hint"
+  );
+
+  assert.equal(noSpeech.ok, true);
+  assert.equal(button.getAttribute("data-pbt-local-asr-state"), "no-speech");
+  assert.equal(button.getAttribute("data-pbt-local-asr-error"), "youtube_local_asr_no_speech");
+  assert.equal(button.getAttribute("data-pbt-local-asr-active"), "true");
+  assert.equal(hint.getAttribute("data-pbt-local-asr-state"), "no-speech");
+  assert.match(hint.textContent, /没有识别到清晰英文语音/);
+
+  const missingAudio = api.handleYouTubeLocalAsrStatus({
+    requestId: 1,
+    active: false,
+    error: {
+      code: "youtube_local_asr_no_audio_chunk",
+      message: "No audio chunk was received from the current YouTube tab."
+    }
+  });
+  hint = findNode(
+    document.body,
+    (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "youtube-transcript-hint"
+  );
+
+  assert.equal(missingAudio.ok, true);
+  assert.equal(button.textContent, "!");
+  assert.equal(button.getAttribute("data-pbt-local-asr-state"), "no-audio-chunk");
+  assert.equal(button.getAttribute("data-pbt-local-asr-error"), "youtube_local_asr_no_audio_chunk");
+  assert.equal(button.getAttribute("data-pbt-local-asr-active"), "false");
+  assert.equal(hint.getAttribute("data-pbt-local-asr-state"), "no-audio-chunk");
+  assert.match(hint.textContent, /没有收到当前标签页音频块/);
+  assert.match(hint.textContent, /没有静音/);
+});
+
+test("youtube local ASR diagnostics classify provider render and stale states", async () => {
+  const document = createDocument();
+  const player = el(document, "div", "", { id: "movie_player" });
+  player.rect = { left: 80, top: 40, right: 880, bottom: 520, width: 800, height: 480 };
+  document.body.appendChild(player);
+  const api = await loadContentApi(document, {
+    location: { href: "https://www.youtube.com/watch?v=test-video" },
+    sendMessage(message, callback) {
+      if (message.type === "PBT_TRANSLATE_YOUTUBE_TRANSCRIPT") {
+        callback({ ok: true, status: "local_asr_started" });
+        return;
+      }
+
+      callback({ ok: true });
+    }
+  });
+
+  api.showFloatingTranslateButton({ qualityMode: "free", displayMode: "bilingual", paidProvider: "gemini" });
+  const button = findNode(
+    document.body,
+    (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "youtube-transcript-toggle"
+  );
+
+  button.click({ altKey: true });
+
+  const providerFailed = api.handleYouTubeLocalAsrStatus({
+    requestId: 1,
+    active: false,
+    error: {
+      code: "youtube_local_asr_provider_failed",
+      message: "Provider did not return subtitles."
+    }
+  });
+  assert.equal(providerFailed.ok, true);
+  assert.equal(button.getAttribute("data-pbt-local-asr-state"), "provider-failed");
+  assert.equal(button.getAttribute("data-pbt-local-asr-error"), "youtube_local_asr_provider_failed");
+
+  button.click({ altKey: true });
+
+  const renderFailed = api.handleYouTubeLocalAsrStatus({
+    requestId: 2,
+    active: false,
+    error: {
+      code: "youtube_local_asr_render_failed",
+      message: "Local ASR subtitles could not be rendered."
+    }
+  });
+  assert.equal(renderFailed.ok, true);
+  assert.equal(button.getAttribute("data-pbt-local-asr-state"), "render-failed");
+  assert.equal(button.getAttribute("data-pbt-local-asr-error"), "youtube_local_asr_render_failed");
+
+  button.click({ altKey: true });
+
+  const staleRender = api.renderYouTubeLocalAsrTranslation({
+    requestId: 99,
+    id: "asr-stale",
+    sourceText: "stale local ASR source",
+    translatedText: "旧字幕"
+  });
+  assert.equal(staleRender.ok, false);
+  assert.equal(staleRender.stale, true);
+  assert.equal(button.getAttribute("data-pbt-local-asr-state"), "render-stale");
+  assert.equal(button.getAttribute("data-pbt-local-asr-error"), "stale_youtube_local_asr_request");
+});
+
+test("youtube transcript runtime invalidation does not rethrow when getURL is unavailable", async () => {
+  const document = createDocument();
+  const player = el(document, "div", "", { id: "movie_player" });
+  let contextInvalidated = false;
+  player.rect = { left: 80, top: 40, right: 880, bottom: 520, width: 800, height: 480 };
+  document.body.appendChild(player);
+  const api = await loadContentApi(document, {
+    location: { href: "https://www.youtube.com/watch?v=test-video" },
+    sendMessage(message, callback) {
+      if (message.type === "PBT_TRANSLATE_YOUTUBE_TRANSCRIPT") {
+        contextInvalidated = true;
+        throw new Error("Extension context invalidated.");
+      }
+
+      callback({ ok: true });
+    },
+    getURL(path) {
+      if (contextInvalidated) {
+        throw new Error("Extension context invalidated.");
+      }
+
+      return `chrome-extension://test-id/${path}`;
+    }
+  });
+
+  api.showFloatingTranslateButton({ qualityMode: "free", displayMode: "bilingual", paidProvider: "gemini" });
+  const button = findNode(
+    document.body,
+    (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "youtube-transcript-toggle"
+  );
+
+  assert.doesNotThrow(() => {
+    button.click();
+  });
+  assert.equal(findNode(document.body, (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "floating-panel"), null);
+  assert.equal(
+    findNode(document.body, (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "youtube-transcript-toggle"),
+    null
+  );
+});
+
+test("youtube transcript floating button shows a reload hint when the player caption request is not observed", async () => {
+  const fixture = createYouTubeWatchFixture();
+  let api = null;
+
+  api = await loadYouTubeCaptionApi(fixture, {
+    performanceEntries: [],
+    async fetch() {
+      throw new Error("caption fetch should not run");
+    },
+    sendMessage(message, callback) {
+      if (message.type !== "PBT_TRANSLATE_YOUTUBE_TRANSCRIPT") {
+        callback({ ok: true });
+        return;
+      }
+
+      void api.collectYouTubeTranscriptSegmentsForTranslation({
+        doc: fixture.document,
+        requestId: message.requestId,
+        allowYouTubeCaptionTrack: message.allowYouTubeCaptionTrack,
+        allowYouTubePlayerCaptionToggle: message.allowYouTubePlayerCaptionToggle
+      }).then((collected) => {
+        callback({
+          ok: false,
+          status: collected.status,
+          error: {
+            code: "youtube_caption_track_token_missing",
+            message: "The YouTube player caption request was not observed."
+          }
+        });
+      });
+    }
+  });
+
+  api.showFloatingTranslateButton({ qualityMode: "free", displayMode: "bilingual", paidProvider: "gemini" });
+  const button = findYouTubeControl(fixture.document, "youtube-transcript-toggle");
+
+  button.click();
+
+  assert.notEqual(findYouTubeControl(fixture.document, "youtube-native-caption-style"), null);
+
+  await flushYouTubeTasks();
+  const hint = findYouTubeControl(fixture.document, "youtube-transcript-hint");
+
+  assert.equal(button.textContent, "!");
+  assert.match(hint.textContent, /刷新 YouTube 页面/);
+  assert.match(hint.textContent, /再点“幕”/);
+  assert.equal(findYouTubeControl(fixture.document, "youtube-native-caption-style"), null);
+});
+
+test("youtube transcript floating button shows a visible hint when overlay render has no usable translations", async () => {
+  const document = createDocument();
+  const player = el(document, "div", "", { id: "movie_player" });
+  player.rect = { left: 80, top: 40, right: 880, bottom: 520, width: 800, height: 480 };
+  document.body.appendChild(player);
+  const api = await loadContentApi(document, {
+    location: { href: "https://www.youtube.com/watch?v=test-video" },
+    sendMessage(message, callback) {
+      if (message.type === "PBT_TRANSLATE_YOUTUBE_TRANSCRIPT") {
+        callback({
+          ok: false,
+          error: {
+            code: "youtube_transcript_no_usable_translations",
+            message: "The translation provider did not return usable transcript text."
+          }
+        });
+        return;
+      }
+
+      callback({ ok: true });
+    }
+  });
+
+  api.showFloatingTranslateButton({ qualityMode: "free", displayMode: "bilingual", paidProvider: "gemini" });
+  const button = findNode(
+    document.body,
+    (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "youtube-transcript-toggle"
+  );
+
+  button.click();
+
+  const hint = findNode(
+    document.body,
+    (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "youtube-transcript-hint"
+  );
+
+  assert.equal(button.textContent, "!");
+  assert.match(hint.textContent, /没有返回可显示的中文字幕/);
+  assert.equal(hint.textContent.includes("The translation provider"), false);
+});
+
+test("youtube transcript floating button times out local loading when background never responds", async () => {
+  const document = createDocument();
+  const player = el(document, "div", "", { id: "movie_player" });
+  const timers = [];
+  player.rect = { left: 80, top: 40, right: 880, bottom: 520, width: 800, height: 480 };
+  document.body.appendChild(player);
+  const api = await loadContentApi(document, {
+    location: { href: "https://www.youtube.com/watch?v=test-video" },
+    setTimeout(callback, delayMs) {
+      const timer = { callback, delayMs, cleared: false };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimeout(timer) {
+      timer.cleared = true;
+    },
+    sendMessage(message, callback) {
+      if (message.type === "PBT_TRANSLATE_YOUTUBE_TRANSCRIPT") {
+        return;
+      }
+
+      callback({ ok: true });
+    }
+  });
+
+  api.showFloatingTranslateButton({ qualityMode: "free", displayMode: "bilingual", paidProvider: "gemini" });
+  const button = findNode(
+    document.body,
+    (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "youtube-transcript-toggle"
+  );
+
+  button.click();
+  const loading = findNode(button, (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "youtube-transcript-loading");
+  const timeout = timers.find((timer) => timer.delayMs === 30000);
+
+  assert.equal(button.getAttribute("data-pbt-loading"), "youtube-transcript");
+  assert.equal(loading.style.animation, "pbt-spinner-rotate 680ms linear infinite");
+
+  timeout.callback();
+
+  assert.equal(button.hasAttribute("data-pbt-loading"), false);
+  assert.equal(button.textContent, "!");
+  assert.match(button.getAttribute("title"), /超过 30 秒/);
+});
+
+test("youtube transcript floating button second click cancels local loading and ignores late render", async () => {
+  const fixture = createYouTubeWatchFixture({ currentTime: 3 });
+  const timers = [];
+  let pendingCallback = null;
+  const api = await loadYouTubeCaptionApi(fixture, {
+    fetch: createYouTubeCaptionFetch({ en: manualCaptionFixturePayload() }),
+    setTimeout(callback, delayMs) {
+      const timer = { callback, delayMs, cleared: false };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimeout(timer) {
+      timer.cleared = true;
+    },
+    sendMessage(message, callback) {
+      if (message.type === "PBT_TRANSLATE_YOUTUBE_TRANSCRIPT") {
+        pendingCallback = callback;
+        return;
+      }
+
+      callback({ ok: true });
+    }
+  });
+
+  api.showFloatingTranslateButton({ qualityMode: "free", displayMode: "bilingual", paidProvider: "gemini" });
+  const button = findYouTubeControl(fixture.document, "youtube-transcript-toggle");
+
+  button.click();
+  const collected = await api.collectYouTubeTranscriptSegmentsForTranslation({
+    doc: fixture.document,
+    requestId: 1,
+    allowYouTubeCaptionTrack: true
+  });
+  const timeout = timers.find((timer) => timer.delayMs === 30000);
+
+  assert.equal(button.getAttribute("data-pbt-loading"), "youtube-transcript");
+  assert.notEqual(findYouTubeOverlay(fixture.document), null);
+
+  button.click();
+
+  assert.equal(timeout.cleared, true);
+  assert.equal(button.hasAttribute("data-pbt-loading"), false);
+  assert.equal(button.textContent, "幕");
+  assert.equal(findYouTubeOverlay(fixture.document), null);
+
+  const staleRender = api.renderYouTubeTranscriptTranslations({
+    requestId: 1,
+    videoId: "test-video",
+    translations: manualCaptionFixtureTranslations(collected.segments)
+  });
+
+  assert.equal(staleRender.ok, false);
+  assert.equal(staleRender.error.code, "stale_youtube_transcript_request");
+
+  pendingCallback({ ok: true, status: "translated", renderedCount: 1 });
+
+  assert.equal(button.getAttribute("data-pbt-active"), "false");
+  assert.equal(button.textContent, "幕");
+});
+
+test("youtube transcript floating button is positioned at the video bottom right", async () => {
+  const document = createDocument();
+  const player = el(document, "div", "", { id: "movie_player" });
+  player.rect = { left: 100, top: 50, right: 900, bottom: 550, width: 800, height: 500 };
+  document.body.appendChild(player);
+
+  const api = await loadContentApi(document, {
+    location: { href: "https://www.youtube.com/watch?v=test-video" }
+  });
+
+  api.showFloatingTranslateButton({ qualityMode: "free", displayMode: "bilingual", paidProvider: "gemini" });
+  const button = findNode(
+    document.body,
+    (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "youtube-transcript-toggle"
+  );
+
+  assert.equal(button.style.display, "inline-flex");
+  assert.equal(button.parentNode, player);
+  assert.equal(button.style.right, "18px");
+  assert.equal(button.style.bottom, "72px");
+});
+
+test("youtube transcript floating button is hidden outside watch pages", async () => {
+  const document = createDocument();
+  const player = el(document, "div", "", { id: "movie_player" });
+  player.rect = { left: 80, top: 40, right: 880, bottom: 520, width: 800, height: 480 };
+  document.body.appendChild(player);
+  const api = await loadContentApi(document, {
+    location: { href: "https://www.youtube.com/" }
+  });
+
+  api.showFloatingTranslateButton({ qualityMode: "free", displayMode: "bilingual", paidProvider: "gemini" });
+  const button = findNode(
+    document.body,
+    (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === "youtube-transcript-toggle"
+  );
+
+  assert.equal(button.style.display, "none");
+});
+
 test("replace renderer replaces once and restores original text", async () => {
   const document = createDocument();
   const paragraph = el(document, "p", "Original paragraph");
@@ -1437,12 +2497,21 @@ test("floating translate click restores rendered text and removes stale ui when 
   const document = createDocument();
   const paragraph = el(document, "p", "Readable paragraph");
   document.body.appendChild(paragraph);
+  let contextInvalidated = false;
   let api;
 
   api = await loadContentApi(document, {
     location: { href: "https://example.com/article" },
     sendMessage() {
+      contextInvalidated = true;
       throw new Error("Extension context invalidated.");
+    },
+    getURL(path) {
+      if (contextInvalidated) {
+        throw new Error("Extension context invalidated.");
+      }
+
+      return `chrome-extension://test-id/${path}`;
     }
   });
 
@@ -3207,6 +4276,1026 @@ test("floating target-language pause does not keep rewriting its own button", as
   assert.equal(getTranslateCheckmark(translateButton), null);
 });
 
+test("youtube transcript plugin-owned mutations do not reschedule transcript button controls", async () => {
+  const fixture = createYouTubeWatchFixture({ currentTime: 1.2 });
+  const frameCallbacks = [];
+  const api = await loadYouTubeCaptionApi(fixture, {
+    fetch: createYouTubeCaptionFetch({ en: manualCaptionFixturePayload() }),
+    mutationObserver: true,
+    requestAnimationFrame(callback) {
+      frameCallbacks.push(callback);
+      return frameCallbacks.length;
+    }
+  });
+
+  api.showFloatingTranslateButton({ qualityMode: "free", displayMode: "bilingual", paidProvider: "gemini" });
+  const collected = await api.collectYouTubeTranscriptSegmentsForTranslation({
+    doc: fixture.document,
+    allowYouTubeCaptionTrack: true
+  });
+  api.renderYouTubeTranscriptTranslations({ translations: manualCaptionFixtureTranslations(collected.segments) });
+
+  const overlay = findYouTubeOverlay(fixture.document);
+  const observer = api.__mutationObservers[0];
+
+  observer.trigger([
+    { type: "attributes", attributeName: "style", target: overlay }
+  ]);
+  observer.trigger([
+    { type: "characterData", target: overlay.childNodes[0] }
+  ]);
+  observer.trigger([
+    { type: "childList", target: fixture.document.body, addedNodes: [overlay], removedNodes: [] }
+  ]);
+
+  assert.equal(frameCallbacks.length, 0);
+
+  const pageUpdate = el(fixture.document, "div", "Recommended video title");
+  fixture.document.body.appendChild(pageUpdate);
+  observer.trigger([
+    { type: "childList", target: fixture.document.body, addedNodes: [pageUpdate], removedNodes: [] }
+  ]);
+
+  assert.equal(frameCallbacks.length, 1);
+});
+
+test("youtube caption collector reuses the player's timed text request for the current video", async () => {
+  const fixture = createYouTubeWatchFixture({ currentTime: 3 });
+  const fetched = [];
+  const stalePlayerResponse = {
+    videoDetails: { videoId: "old-video" },
+    captions: {
+      playerCaptionsTracklistRenderer: {
+        captionTracks: [{ languageCode: "fr", baseUrl: "https://www.youtube.com/api/timedtext?v=old-video&lang=fr" }]
+      }
+    }
+  };
+
+  fixture.document.body.appendChild(el(
+    fixture.document,
+    "script",
+    `var ytInitialPlayerResponse = ${JSON.stringify(stalePlayerResponse)};`
+  ));
+
+  const api = await loadYouTubeCaptionApi(fixture, {
+    performanceEntries: [
+      { name: youtubeTimedTextRequestUrl({ v: "old-video", lang: "fr", pot: "old-pot" }) },
+      { name: youtubeTimedTextRequestUrl({ lang: "zh-CN", tlang: "zh-Hans" }) },
+      { name: "https://www.youtube.com/api/timedtext?v=test-video&lang=en" }
+    ],
+    fetch: createYouTubeCaptionFetch({ en: manualCaptionFixturePayload() }, fetched)
+  });
+  const collected = await api.collectYouTubeTranscriptSegmentsForTranslation({
+    doc: fixture.document,
+    allowYouTubeCaptionTrack: true
+  });
+  const requestUrl = fetched[0].url;
+
+  assert.equal(collected.status, "ready");
+  assert.equal(collected.source, "caption_track");
+  assert.equal(collected.videoId, "test-video");
+  assert.equal(fetched.length, 1);
+  assert.equal(`${requestUrl.origin}${requestUrl.pathname}`, "https://www.youtube.com/api/timedtext");
+  assert.equal(requestUrl.searchParams.get("v"), "test-video");
+  assert.equal(requestUrl.searchParams.get("lang"), "en");
+  assert.equal(requestUrl.searchParams.get("pot"), "player-pot-token");
+  assert.equal(requestUrl.searchParams.get("tlang"), null);
+  assert.equal(requestUrl.searchParams.get("kind"), null);
+  assert.equal(requestUrl.searchParams.get("fmt"), "json3");
+  assert.equal(fetched[0].options.credentials, "omit");
+  assert.deepEqual(Array.from(collected.segments, (segment) => segment.text), [
+    "Now, when a normal student writes a paper, they spread the work out.",
+    "Then they finish.",
+    "Much later line."
+  ]);
+});
+
+test("youtube caption collector prefers the current video's listed English manual track", async () => {
+  const fixture = createYouTubeWatchFixture();
+  const fetched = [];
+  const playerResponse = {
+    videoDetails: { videoId: "test-video" },
+    captions: {
+      playerCaptionsTracklistRenderer: {
+        captionTracks: [
+          { languageCode: "en", kind: "asr", name: { simpleText: "English (auto-generated)" } },
+          { languageCode: "en-GB", name: { simpleText: "English (United Kingdom)" } }
+        ]
+      }
+    }
+  };
+
+  fixture.document.body.appendChild(el(
+    fixture.document,
+    "script",
+    `var ytInitialPlayerResponse = ${JSON.stringify(playerResponse)};`
+  ));
+
+  const api = await loadYouTubeCaptionApi(fixture, {
+    fetch: createYouTubeCaptionFetch({ "en-GB": manualCaptionFixturePayload() }, fetched)
+  });
+  const collected = await api.collectYouTubeTranscriptSegmentsForTranslation({
+    doc: fixture.document,
+    allowYouTubeCaptionTrack: true
+  });
+
+  assert.equal(collected.status, "ready");
+  assert.deepEqual(fetched.map((entry) => entry.key), ["en-GB"]);
+});
+
+test("youtube caption collector stops before touching CC when the current video has no English track", async () => {
+  const fixture = createYouTubeWatchFixture();
+  const fetched = [];
+  let clicks = 0;
+  const playerResponse = {
+    videoDetails: { videoId: "test-video" },
+    captions: {
+      playerCaptionsTracklistRenderer: {
+        captionTracks: [{ languageCode: "fr", name: { simpleText: "French" } }]
+      }
+    }
+  };
+
+  fixture.captionButton.addEventListener("click", () => {
+    clicks += 1;
+  });
+  fixture.document.body.appendChild(el(
+    fixture.document,
+    "script",
+    `var ytInitialPlayerResponse = ${JSON.stringify(playerResponse)};`
+  ));
+
+  const api = await loadYouTubeCaptionApi(fixture, {
+    performanceEntries: [],
+    fetch: createYouTubeCaptionFetch({}, fetched)
+  });
+  const collected = await api.collectYouTubeTranscriptSegmentsForTranslation({
+    doc: fixture.document,
+    allowYouTubeCaptionTrack: true,
+    allowYouTubePlayerCaptionToggle: true
+  });
+
+  assert.equal(collected.status, "caption_track_not_english");
+  assert.equal(clicks, 0);
+  assert.equal(fetched.length, 0);
+});
+
+test("youtube caption collector turns CC on once to capture the player request and then restores it", async () => {
+  const fixture = createYouTubeWatchFixture();
+  const fetched = [];
+  let clicks = 0;
+  let api = null;
+
+  fixture.captionButton.addEventListener("click", () => {
+    const wasOn = fixture.captionButton.getAttribute("aria-pressed") === "true";
+    clicks += 1;
+    fixture.captionButton.setAttribute("aria-pressed", wasOn ? "false" : "true");
+
+    if (!wasOn) {
+      api.__performanceObservers[0].emit([{ name: youtubeTimedTextRequestUrl({ lang: "zh-CN" }) }]);
+    }
+  });
+
+  api = await loadYouTubeCaptionApi(fixture, {
+    performanceEntries: [],
+    performanceObserver: true,
+    fetch: createYouTubeCaptionFetch({ en: manualCaptionFixturePayload() }, fetched)
+  });
+
+  const collected = await api.collectYouTubeTranscriptSegmentsForTranslation({
+    doc: fixture.document,
+    allowYouTubeCaptionTrack: true,
+    allowYouTubePlayerCaptionToggle: true
+  });
+  const observer = api.__performanceObservers[0];
+  const nativeCaptionStyle = findYouTubeControl(fixture.document, "youtube-native-caption-style");
+
+  assert.equal(collected.status, "ready");
+  assert.equal(observer.observerOptions.type, "resource");
+  assert.equal(observer.observerOptions.buffered, true);
+  assert.equal(clicks, 2);
+  assert.equal(fixture.captionButton.getAttribute("aria-pressed"), "false");
+  assert.deepEqual(fetched.map((entry) => entry.key), ["en"]);
+  assert.match(nativeCaptionStyle.textContent, /ytp-caption-window-container\{visibility:hidden !important;\}/);
+});
+
+test("youtube caption collector reports why the player caption request is unavailable", async () => {
+  const cases = [
+    { name: "missing CC button", fixture: { captionButton: false }, status: "caption_track_missing" },
+    { name: "disabled CC button", fixture: { captionButtonAttributes: { "aria-disabled": "true" } }, status: "caption_track_missing" },
+    { name: "request not observed", fixture: {}, status: "caption_track_token_missing" },
+    { name: "CC label says captions cannot be shown", fixture: { captionButtonAttributes: { "aria-label": "无法显示字幕" } }, status: "caption_track_token_missing" },
+    { name: "ad showing", fixture: { playerClass: "html5-video-player ad-showing" }, status: "caption_track_ad_showing" }
+  ];
+
+  for (const entry of cases) {
+    const fixture = createYouTubeWatchFixture(entry.fixture);
+    let fetchCalled = false;
+    const api = await loadYouTubeCaptionApi(fixture, {
+      performanceEntries: [],
+      async fetch() {
+        fetchCalled = true;
+        return { ok: true, async text() { return ""; } };
+      }
+    });
+    const collected = await api.collectYouTubeTranscriptSegmentsForTranslation({
+      doc: fixture.document,
+      allowYouTubeCaptionTrack: true,
+      allowYouTubePlayerCaptionToggle: true
+    });
+
+    assert.equal(collected.status, entry.status, entry.name);
+    assert.equal(collected.segments.length, 0, entry.name);
+    assert.equal(fetchCalled, false, entry.name);
+  }
+});
+
+test("youtube caption collector still asks the player for captions when the CC label says they cannot be shown", async () => {
+  const fixture = createYouTubeWatchFixture({
+    captionButtonAttributes: { "aria-label": "无法显示字幕", "aria-pressed": "true" }
+  });
+  const fetched = [];
+  let clicks = 0;
+  let api = null;
+
+  fixture.captionButton.addEventListener("click", () => {
+    clicks += 1;
+
+    if (clicks === 2) {
+      api.__performanceObservers[0].emit([{ name: youtubeTimedTextRequestUrl({ kind: "asr" }) }]);
+    }
+  });
+
+  api = await loadYouTubeCaptionApi(fixture, {
+    performanceEntries: [],
+    performanceObserver: true,
+    fetch: createYouTubeCaptionFetch({ "en|asr": asrCaptionFixturePayload() }, fetched)
+  });
+  const collected = await api.collectYouTubeTranscriptSegmentsForTranslation({
+    doc: fixture.document,
+    allowYouTubeCaptionTrack: true,
+    allowYouTubePlayerCaptionToggle: true
+  });
+
+  assert.equal(collected.status, "ready");
+  assert.equal(clicks, 2);
+  assert.deepEqual(fetched.map((entry) => entry.key), ["en", "en|asr"]);
+});
+
+test("youtube caption collector does not report missing captions when the current video lists English tracks", async () => {
+  const fixture = createYouTubeWatchFixture({ captionButton: false });
+  const playerResponse = {
+    videoDetails: { videoId: "test-video" },
+    captions: {
+      playerCaptionsTracklistRenderer: {
+        captionTracks: [{ languageCode: "en", kind: "asr", name: { simpleText: "English (auto-generated)" } }]
+      }
+    }
+  };
+
+  fixture.document.body.appendChild(el(
+    fixture.document,
+    "script",
+    `var ytInitialPlayerResponse = ${JSON.stringify(playerResponse)};`
+  ));
+
+  const api = await loadYouTubeCaptionApi(fixture, {
+    performanceEntries: [],
+    fetch: createYouTubeCaptionFetch({})
+  });
+  const collected = await api.collectYouTubeTranscriptSegmentsForTranslation({
+    doc: fixture.document,
+    allowYouTubeCaptionTrack: true,
+    allowYouTubePlayerCaptionToggle: true
+  });
+
+  assert.equal(collected.status, "caption_track_token_missing");
+});
+
+test("youtube caption collector requires the caption permission and a watch page", async () => {
+  let fetchCalled = false;
+  const fetch = async () => {
+    fetchCalled = true;
+    return { ok: true, async text() { return ""; } };
+  };
+  const watchFixture = createYouTubeWatchFixture();
+  const watchApi = await loadYouTubeCaptionApi(watchFixture, { fetch });
+  const searchFixture = createYouTubeWatchFixture();
+  const searchApi = await loadYouTubeCaptionApi(searchFixture, {
+    location: { href: "https://www.youtube.com/results?search_query=captions" },
+    fetch
+  });
+
+  const notAllowed = await watchApi.collectYouTubeTranscriptSegmentsForTranslation({ doc: watchFixture.document });
+  const unsupported = await searchApi.collectYouTubeTranscriptSegmentsForTranslation({
+    doc: searchFixture.document,
+    allowYouTubeCaptionTrack: true
+  });
+
+  assert.equal(notAllowed.status, "caption_track_not_allowed");
+  assert.equal(unsupported.status, "unsupported_page");
+  assert.equal(fetchCalled, false);
+});
+
+test("youtube caption collector falls back to the auto-generated track and merges words into sentences", async () => {
+  const fixture = createYouTubeWatchFixture({ currentTime: 1.5 });
+  const fetched = [];
+  const api = await loadYouTubeCaptionApi(fixture, {
+    fetch: createYouTubeCaptionFetch({ "en|asr": asrCaptionFixturePayload() }, fetched)
+  });
+  const collected = await api.collectYouTubeTranscriptSegmentsForTranslation({
+    doc: fixture.document,
+    allowYouTubeCaptionTrack: true
+  });
+  const overlay = findYouTubeOverlay(fixture.document);
+
+  assert.equal(collected.status, "ready");
+  assert.deepEqual(fetched.map((entry) => entry.key), ["en", "en|asr"]);
+  assert.deepEqual(Array.from(collected.segments, (segment) => segment.text), [
+    "so today we talk about captions",
+    "[Music]",
+    "next part"
+  ]);
+  assert.equal(overlay.textContent, "so today we talk about captions");
+  assert.equal(overlay.getAttribute("data-pbt-sync-track"), "asr");
+  assert.equal(overlay.getAttribute("data-pbt-sync-cue"), "1.00");
+  assert.equal(overlay.getAttribute("data-pbt-sync-cue-end"), "3.60");
+});
+
+test("youtube caption collector groups auto-generated tracks without word timing by caption lines", async () => {
+  const fixture = createYouTubeWatchFixture({ currentTime: 7 });
+  const api = await loadYouTubeCaptionApi(fixture, {
+    fetch: createYouTubeCaptionFetch({ "en|asr": manualCaptionFixturePayload() })
+  });
+  const collected = await api.collectYouTubeTranscriptSegmentsForTranslation({
+    doc: fixture.document,
+    allowYouTubeCaptionTrack: true
+  });
+  const overlay = findYouTubeOverlay(fixture.document);
+
+  assert.equal(collected.status, "ready");
+  assert.equal(collected.segments.length, 3);
+  assert.equal(overlay.getAttribute("data-pbt-sync-track"), "asr_lines");
+  assert.equal(overlay.getAttribute("data-pbt-sync-cue"), "6.50");
+});
+
+test("youtube caption collector reports caption fetch failures", async () => {
+  const fixture = createYouTubeWatchFixture();
+  const api = await loadYouTubeCaptionApi(fixture, {
+    async fetch() {
+      throw new Error("network down");
+    }
+  });
+  const collected = await api.collectYouTubeTranscriptSegmentsForTranslation({
+    doc: fixture.document,
+    allowYouTubeCaptionTrack: true
+  });
+
+  assert.equal(collected.status, "caption_track_fetch_failed");
+  assert.equal(collected.segments.length, 0);
+  assert.equal(findYouTubeOverlay(fixture.document), null);
+});
+
+test("youtube caption overlay follows video currentTime instead of player control text", async () => {
+  const fixture = createYouTubeWatchFixture({ currentTime: 3 });
+  const staleControlTime = el(fixture.document, "span", "0:41", { class: "ytp-time-current" });
+  const previewVideo = el(fixture.document, "video", "");
+
+  staleControlTime.rect = { left: 120, top: 520, right: 160, bottom: 540, width: 40, height: 20 };
+  fixture.player.appendChild(staleControlTime);
+  fixture.player.getCurrentTime = () => 41;
+  previewVideo.currentTime = 12.5;
+  fixture.document.body.appendChild(previewVideo);
+
+  const api = await loadYouTubeCaptionApi(fixture, {
+    fetch: createYouTubeCaptionFetch({ en: manualCaptionFixturePayload() })
+  });
+  const collected = await api.collectYouTubeTranscriptSegmentsForTranslation({
+    doc: fixture.document,
+    allowYouTubeCaptionTrack: true
+  });
+  const overlay = findYouTubeOverlay(fixture.document);
+
+  assert.equal(overlay.textContent, "Now, when a normal student writes a paper, they spread the work out.");
+  assert.equal(overlay.getAttribute("data-pbt-sync-status"), "source_only");
+
+  const rendered = api.renderYouTubeTranscriptTranslations({
+    videoId: "test-video",
+    translations: manualCaptionFixtureTranslations(collected.segments)
+  });
+
+  assert.equal(rendered.renderedCount, 3);
+  assert.equal(
+    overlay.textContent,
+    youtubeOverlayText("现在，普通学生写论文时会把工作分散开。", "Now, when a normal student writes a paper, they spread the work out.")
+  );
+  assert.equal(overlay.style.display, "block");
+  assert.equal(overlay.parentNode, fixture.player);
+  assert.equal(overlay.style.left, "50%");
+  assert.equal(overlay.style.bottom, "82px");
+  assert.equal(overlay.style.fontSize, "18px");
+  assert.equal(overlay.getAttribute("data-pbt-sync-source"), "caption_track");
+  assert.equal(overlay.getAttribute("data-pbt-sync-track"), "manual");
+  assert.equal(overlay.getAttribute("data-pbt-sync-status"), "translated");
+  assert.equal(overlay.getAttribute("data-pbt-sync-playback"), "3.00");
+  assert.equal(overlay.getAttribute("data-pbt-sync-cue"), "0.00");
+  assert.equal(overlay.getAttribute("data-pbt-sync-cue-end"), "6.50");
+
+  fixture.video.currentTime = 6.49;
+  fixture.video.dispatchEvent("timeupdate");
+  assert.match(overlay.textContent, /^现在/);
+
+  fixture.video.currentTime = 6.5;
+  fixture.video.dispatchEvent("timeupdate");
+  assert.equal(overlay.textContent, youtubeOverlayText("然后他们就写完了。", "Then they finish."));
+
+  fixture.video.currentTime = 10;
+  fixture.video.dispatchEvent("timeupdate");
+  assert.equal(overlay.style.display, "none");
+  assert.equal(overlay.textContent, "");
+  assert.equal(overlay.getAttribute("data-pbt-sync-status"), "no_cue");
+
+  fixture.video.currentTime = 12.5;
+  fixture.video.dispatchEvent("timeupdate");
+  assert.equal(overlay.textContent, youtubeOverlayText("很久之后的一句。", "Much later line."));
+});
+
+test("youtube caption overlay advances on animation frames while the video plays", async () => {
+  const frameCallbacks = [];
+  const fixture = createYouTubeWatchFixture({ currentTime: 1 });
+
+  fixture.video.paused = false;
+
+  const api = await loadYouTubeCaptionApi(fixture, {
+    fetch: createYouTubeCaptionFetch({ en: manualCaptionFixturePayload() }),
+    requestAnimationFrame(callback) {
+      frameCallbacks.push(callback);
+      return frameCallbacks.length;
+    }
+  });
+  const collected = await api.collectYouTubeTranscriptSegmentsForTranslation({
+    doc: fixture.document,
+    allowYouTubeCaptionTrack: true
+  });
+
+  api.renderYouTubeTranscriptTranslations({ translations: manualCaptionFixtureTranslations(collected.segments) });
+  const overlay = findYouTubeOverlay(fixture.document);
+
+  assert.match(overlay.textContent, /^现在/);
+  assert.equal(frameCallbacks.length, 1);
+
+  fixture.video.currentTime = 7;
+  frameCallbacks.shift()();
+
+  assert.match(overlay.textContent, /^然后/);
+  assert.equal(frameCallbacks.length, 1);
+
+  fixture.video.paused = true;
+  fixture.video.currentTime = 13;
+  frameCallbacks.shift()();
+
+  assert.match(overlay.textContent, /^很久/);
+  assert.equal(frameCallbacks.length, 0);
+});
+
+test("youtube caption overlay hides during ads and clears when the watch video changes", async () => {
+  const fixture = createYouTubeWatchFixture({ currentTime: 3 });
+  const location = { href: "https://www.youtube.com/watch?v=test-video" };
+  const api = await loadYouTubeCaptionApi(fixture, {
+    location,
+    fetch: createYouTubeCaptionFetch({ en: manualCaptionFixturePayload() })
+  });
+  const collected = await api.collectYouTubeTranscriptSegmentsForTranslation({
+    doc: fixture.document,
+    allowYouTubeCaptionTrack: true
+  });
+
+  api.renderYouTubeTranscriptTranslations({ translations: manualCaptionFixtureTranslations(collected.segments) });
+  const overlay = findYouTubeOverlay(fixture.document);
+
+  assert.equal(overlay.style.display, "block");
+  assert.notEqual(findYouTubeControl(fixture.document, "youtube-native-caption-style"), null);
+
+  fixture.player.setAttribute("class", "html5-video-player ad-showing");
+  fixture.video.dispatchEvent("timeupdate");
+
+  assert.equal(overlay.style.display, "none");
+  assert.equal(overlay.getAttribute("data-pbt-sync-status"), "ad");
+
+  fixture.player.setAttribute("class", "html5-video-player");
+  fixture.video.dispatchEvent("timeupdate");
+
+  assert.equal(overlay.style.display, "block");
+
+  location.href = "https://www.youtube.com/watch?v=next-video";
+  fixture.video.dispatchEvent("timeupdate");
+  const staleRender = api.renderYouTubeTranscriptTranslations({
+    translations: [{ id: collected.segments[0].id, text: "旧视频的字幕。" }]
+  });
+
+  assert.equal(findYouTubeOverlay(fixture.document), null);
+  assert.equal(findYouTubeControl(fixture.document, "youtube-native-caption-style"), null);
+  assert.equal(staleRender.ok, false);
+  assert.equal(staleRender.error.code, "stale_youtube_transcript_request");
+});
+
+test("youtube caption collector translates only untranslated sentences around the current time", async () => {
+  const fixture = createYouTubeWatchFixture({ currentTime: 100 });
+  const fetched = [];
+  const api = await loadYouTubeCaptionApi(fixture, {
+    fetch: createYouTubeCaptionFetch({ en: spacedCaptionFixturePayload(40) }, fetched)
+  });
+  const collect = () => api.collectYouTubeTranscriptSegmentsForTranslation({
+    doc: fixture.document,
+    allowYouTubeCaptionTrack: true
+  });
+  const first = await collect();
+
+  assert.equal(first.status, "ready");
+  assert.deepEqual(
+    Array.from(first.segments, (segment) => segment.text),
+    Array.from({ length: 10 }, (_, index) => `Sentence number ${index + 10}.`)
+  );
+
+  api.renderYouTubeTranscriptTranslations({ translations: spacedCaptionFixtureTranslations(first.segments) });
+  const cached = await collect();
+
+  assert.equal(cached.status, "ready_cached");
+  assert.equal(cached.segments.length, 0);
+  assert.equal(cached.cachedCueCount, 10);
+
+  fixture.video.currentTime = 150;
+  const next = await collect();
+
+  assert.deepEqual(Array.from(next.segments, (segment) => segment.text), [
+    "Sentence number 20.",
+    "Sentence number 21.",
+    "Sentence number 22.",
+    "Sentence number 23.",
+    "Sentence number 24."
+  ]);
+  assert.equal(fetched.length, 1);
+});
+
+test("youtube caption render keeps late translations after a seek but rejects another video", async () => {
+  const fixture = createYouTubeWatchFixture({ currentTime: 100 });
+  const api = await loadYouTubeCaptionApi(fixture, {
+    fetch: createYouTubeCaptionFetch({ en: spacedCaptionFixturePayload(40) })
+  });
+  const collected = await api.collectYouTubeTranscriptSegmentsForTranslation({
+    doc: fixture.document,
+    allowYouTubeCaptionTrack: true
+  });
+
+  fixture.video.currentTime = 400;
+  const lateRender = api.renderYouTubeTranscriptTranslations({
+    videoId: "test-video",
+    translations: spacedCaptionFixtureTranslations(collected.segments)
+  });
+  const otherVideoRender = api.renderYouTubeTranscriptTranslations({
+    videoId: "other-video",
+    translations: spacedCaptionFixtureTranslations(collected.segments)
+  });
+
+  assert.equal(lateRender.ok, true);
+  assert.equal(lateRender.renderedCount, 10);
+  assert.equal(otherVideoRender.ok, false);
+  assert.equal(otherVideoRender.error.code, "stale_youtube_transcript_request");
+
+  fixture.video.currentTime = 110;
+  fixture.video.dispatchEvent("timeupdate");
+
+  assert.equal(findYouTubeOverlay(fixture.document).textContent, youtubeOverlayText("第 11 句。", "Sentence number 11."));
+});
+
+test("youtube caption overlay prefetches the next minute once while translated", async () => {
+  const sentMessages = [];
+  const fixture = createYouTubeWatchFixture({ currentTime: 100 });
+  const api = await loadYouTubeCaptionApi(fixture, {
+    fetch: createYouTubeCaptionFetch({ en: spacedCaptionFixturePayload(40) }),
+    sendMessage(message) {
+      sentMessages.push(message);
+    }
+  });
+  const collected = await api.collectYouTubeTranscriptSegmentsForTranslation({
+    doc: fixture.document,
+    allowYouTubeCaptionTrack: true
+  });
+
+  api.renderYouTubeTranscriptTranslations({ translations: spacedCaptionFixtureTranslations(collected.segments) });
+  fixture.video.currentTime = 135;
+  fixture.video.dispatchEvent("timeupdate");
+
+  assert.equal(sentMessages.length, 0);
+
+  fixture.video.currentTime = 140;
+  fixture.video.dispatchEvent("timeupdate");
+  fixture.video.currentTime = 141;
+  fixture.video.dispatchEvent("timeupdate");
+
+  assert.equal(sentMessages.length, 1);
+  assert.equal(sentMessages[0].type, "PBT_TRANSLATE_YOUTUBE_TRANSCRIPT");
+  assert.equal(sentMessages[0].allowYouTubeCaptionTrack, true);
+  assert.equal(sentMessages[0].allowYouTubePlayerCaptionToggle, undefined);
+  assert.equal(sentMessages[0].confirmCost, true);
+});
+
+test("youtube caption overlay follows the bilingual or replace display mode", async () => {
+  const fixture = createYouTubeWatchFixture({ currentTime: 1 });
+  const api = await loadYouTubeCaptionApi(fixture, {
+    fetch: createYouTubeCaptionFetch({ en: manualCaptionFixturePayload() })
+  });
+  const sourceText = "Now, when a normal student writes a paper, they spread the work out.";
+
+  api.showFloatingTranslateButton({ qualityMode: "free", displayMode: "replace", paidProvider: "gemini" });
+  const collected = await api.collectYouTubeTranscriptSegmentsForTranslation({
+    doc: fixture.document,
+    allowYouTubeCaptionTrack: true
+  });
+  const overlay = findYouTubeOverlay(fixture.document);
+
+  assert.equal(overlay.textContent, sourceText);
+
+  api.renderYouTubeTranscriptTranslations({
+    translations: [{ id: collected.segments[0].id, text: "第一句中文。" }]
+  });
+
+  assert.equal(overlay.textContent, "第一句中文。");
+
+  api.showFloatingTranslateButton({ displayMode: "bilingual" });
+
+  assert.equal(overlay.textContent, youtubeOverlayText("第一句中文。", sourceText));
+});
+
+test("youtube caption translations survive display mode changes without another provider request", async () => {
+  const sentMessages = [];
+  const fixture = createYouTubeWatchFixture({ currentTime: 1 });
+  const api = await loadYouTubeCaptionApi(fixture, {
+    fetch: createYouTubeCaptionFetch({ en: manualCaptionFixturePayload() }),
+    sendMessage(message) {
+      sentMessages.push(message);
+    }
+  });
+
+  api.showFloatingTranslateButton({ qualityMode: "free", displayMode: "bilingual", paidProvider: "gemini" });
+  const collected = await api.collectYouTubeTranscriptSegmentsForTranslation({
+    doc: fixture.document,
+    allowYouTubeCaptionTrack: true
+  });
+  api.renderYouTubeTranscriptTranslations({
+    translations: collected.segments.map((segment, index) => ({ id: segment.id, text: ["第一句中文。", "第二句中文。", "第三句中文。"][index] }))
+  });
+  api.showFloatingTranslateButton({ displayMode: "replace" });
+  fixture.video.currentTime = 7;
+  fixture.video.dispatchEvent("timeupdate");
+  const again = await api.collectYouTubeTranscriptSegmentsForTranslation({
+    doc: fixture.document,
+    allowYouTubeCaptionTrack: true
+  });
+
+  assert.equal(sentMessages.filter((message) => message.type === "PBT_TRANSLATE_YOUTUBE_TRANSCRIPT").length, 0);
+  assert.equal(again.status, "ready_cached");
+  assert.equal(findYouTubeOverlay(fixture.document).textContent, "第二句中文。");
+});
+
+test("youtube caption provider changes re-translate the window while keeping the previous text", async () => {
+  const sentMessages = [];
+  const fixture = createYouTubeWatchFixture({ currentTime: 1 });
+  const api = await loadYouTubeCaptionApi(fixture, {
+    fetch: createYouTubeCaptionFetch({ en: manualCaptionFixturePayload() }),
+    sendMessage(message) {
+      sentMessages.push(message);
+    }
+  });
+
+  api.showFloatingTranslateButton({ qualityMode: "free", displayMode: "replace", paidProvider: "gemini" });
+  const first = await api.collectYouTubeTranscriptSegmentsForTranslation({
+    doc: fixture.document,
+    allowYouTubeCaptionTrack: true
+  });
+  api.renderYouTubeTranscriptTranslations({
+    translations: first.segments.map((segment, index) => ({ id: segment.id, text: ["第一句免费译文。", "第二句免费译文。", "第三句免费译文。"][index] }))
+  });
+  api.showFloatingTranslateButton({ qualityMode: "natural", paidProvider: "gemini" });
+
+  const overlay = findYouTubeOverlay(fixture.document);
+  const translateMessages = sentMessages.filter((message) => message.type === "PBT_TRANSLATE_YOUTUBE_TRANSCRIPT");
+
+  assert.equal(translateMessages.length, 1);
+  assert.equal(translateMessages[0].qualityMode, "natural");
+  assert.equal(overlay.textContent, "第一句免费译文。");
+
+  const second = await api.collectYouTubeTranscriptSegmentsForTranslation({
+    doc: fixture.document,
+    allowYouTubeCaptionTrack: true,
+    requestId: translateMessages[0].requestId
+  });
+
+  assert.equal(second.segments.length, 3);
+
+  api.renderYouTubeTranscriptTranslations({
+    requestId: translateMessages[0].requestId,
+    translations: second.segments.map((segment, index) => ({ id: segment.id, text: ["第一句自然译文。", "第二句自然译文。", "第三句自然译文。"][index] }))
+  });
+
+  assert.equal(overlay.textContent, "第一句自然译文。");
+});
+
+test("youtube caption background updates explain missing paid keys in Chinese and keep old text", async () => {
+  const fixture = createYouTubeWatchFixture({ currentTime: 1 });
+  const api = await loadYouTubeCaptionApi(fixture, {
+    fetch: createYouTubeCaptionFetch({ en: manualCaptionFixturePayload() }),
+    sendMessage(message, callback) {
+      if (message.type === "PBT_TRANSLATE_YOUTUBE_TRANSCRIPT") {
+        callback({ ok: false, error: { code: "missing_api_key", message: "Gemini API Key is required." } });
+      }
+    }
+  });
+
+  api.showFloatingTranslateButton({ qualityMode: "free", displayMode: "replace", paidProvider: "gemini" });
+  const collected = await api.collectYouTubeTranscriptSegmentsForTranslation({
+    doc: fixture.document,
+    allowYouTubeCaptionTrack: true
+  });
+  api.renderYouTubeTranscriptTranslations({
+    translations: collected.segments.map((segment, index) => ({ id: segment.id, text: ["第一句免费译文。", "第二句免费译文。", "第三句免费译文。"][index] }))
+  });
+  api.showFloatingTranslateButton({ qualityMode: "natural", paidProvider: "gemini" });
+
+  assert.match(findYouTubeControl(fixture.document, "youtube-transcript-hint").textContent, /请先在设置里填写翻译服务的 Key/);
+  assert.equal(findYouTubeOverlay(fixture.document).textContent, "第一句免费译文。");
+});
+
+test("youtube caption button explains provider key rejections in Chinese", async () => {
+  const fixture = createYouTubeWatchFixture({ currentTime: 1 });
+  const api = await loadYouTubeCaptionApi(fixture, {
+    fetch: createYouTubeCaptionFetch({ en: manualCaptionFixturePayload() }),
+    sendMessage(message, callback) {
+      if (message.type === "PBT_TRANSLATE_YOUTUBE_TRANSCRIPT") {
+        callback({ ok: false, error: { code: "provider_http_error", message: "Provider request failed.", status: 401 } });
+      }
+    }
+  });
+
+  api.showFloatingTranslateButton({ qualityMode: "natural", displayMode: "bilingual", paidProvider: "gemini" });
+  findYouTubeControl(fixture.document, "youtube-transcript-toggle").click();
+
+  const hint = findYouTubeControl(fixture.document, "youtube-transcript-hint");
+
+  assert.match(hint.textContent, /HTTP 401/);
+  assert.match(hint.textContent, /Key 是否正确/);
+});
+
+test("youtube caption overlay scales with the player, caption size setting and control visibility", async () => {
+  const fixture = createYouTubeWatchFixture({ currentTime: 1 });
+  const api = await loadYouTubeCaptionApi(fixture, {
+    fetch: createYouTubeCaptionFetch({ en: manualCaptionFixturePayload() })
+  });
+
+  api.showFloatingTranslateButton({ qualityMode: "free", displayMode: "bilingual", paidProvider: "gemini" });
+  const collected = await api.collectYouTubeTranscriptSegmentsForTranslation({
+    doc: fixture.document,
+    allowYouTubeCaptionTrack: true
+  });
+  api.renderYouTubeTranscriptTranslations({
+    translations: [{ id: collected.segments[0].id, text: "第一句中文。" }]
+  });
+  const overlay = findYouTubeOverlay(fixture.document);
+  const lines = overlay.childNodes.filter((node) => node.nodeType === 1);
+
+  assert.equal(overlay.parentNode, fixture.player);
+  assert.equal(overlay.style.fontSize, "18px");
+  assert.equal(overlay.style.bottom, "82px");
+  assert.deepEqual(lines.map((line) => line.getAttribute("data-pbt-caption-line")), ["translation", "source"]);
+  assert.equal(lines[1].style.fontSize, "0.75em");
+
+  fixture.player.rect = { left: 0, top: 0, right: 1920, bottom: 1080, width: 1920, height: 1080 };
+  fixture.video.dispatchEvent("timeupdate");
+
+  assert.equal(overlay.style.fontSize, "39px");
+  assert.equal(overlay.style.bottom, "108px");
+
+  fixture.player.setAttribute("class", "html5-video-player ytp-autohide");
+  fixture.video.dispatchEvent("timeupdate");
+
+  assert.equal(overlay.style.bottom, "54px");
+
+  api.showFloatingTranslateButton({ captionSize: "large" });
+
+  assert.equal(overlay.style.fontSize, "47px");
+
+  fixture.player.rect = { left: 0, top: 0, right: 320, bottom: 180, width: 320, height: 180 };
+  api.showFloatingTranslateButton({ captionSize: "standard" });
+
+  assert.equal(overlay.style.fontSize, "16px");
+});
+
+test("youtube caption button lives inside the player and keeps clicks away from the player", async () => {
+  const fixture = createYouTubeWatchFixture({ currentTime: 1 });
+  const sentMessages = [];
+  const api = await loadYouTubeCaptionApi(fixture, {
+    fetch: createYouTubeCaptionFetch({ en: manualCaptionFixturePayload() }),
+    sendMessage(message) {
+      sentMessages.push(message);
+    }
+  });
+  let stopped = 0;
+  const stopPropagation = () => {
+    stopped += 1;
+  };
+
+  api.showFloatingTranslateButton({ qualityMode: "free", displayMode: "bilingual", paidProvider: "gemini" });
+  const button = findYouTubeControl(fixture.document, "youtube-transcript-toggle");
+
+  assert.equal(button.parentNode, fixture.player);
+
+  button.dispatchEvent({ type: "dblclick", stopPropagation });
+  button.click({ stopPropagation });
+
+  assert.equal(stopped, 2);
+  assert.equal(sentMessages.filter((message) => message.type === "PBT_TRANSLATE_YOUTUBE_TRANSCRIPT").length, 1);
+});
+
+test("youtube caption layout refreshes when the player is resized while paused", async () => {
+  const fixture = createYouTubeWatchFixture({ currentTime: 1 });
+  const resizeObservers = [];
+  const frames = [];
+  const api = await loadYouTubeCaptionApi(fixture, {
+    fetch: createYouTubeCaptionFetch({ en: manualCaptionFixturePayload() }),
+    requestAnimationFrame(callback) {
+      frames.push(callback);
+      return frames.length;
+    },
+    beforeRun(sandbox) {
+      sandbox.ResizeObserver = class FakeResizeObserver {
+        constructor(callback) {
+          this.callback = callback;
+          resizeObservers.push(this);
+        }
+
+        observe(target) {
+          this.target = target;
+        }
+
+        disconnect() {}
+      };
+    }
+  });
+
+  api.showFloatingTranslateButton({ qualityMode: "free", displayMode: "bilingual", paidProvider: "gemini" });
+  const collected = await api.collectYouTubeTranscriptSegmentsForTranslation({
+    doc: fixture.document,
+    allowYouTubeCaptionTrack: true
+  });
+  api.renderYouTubeTranscriptTranslations({
+    translations: [{ id: collected.segments[0].id, text: "第一句中文。" }]
+  });
+  const overlay = findYouTubeOverlay(fixture.document);
+
+  assert.equal(resizeObservers.length, 1);
+  assert.equal(resizeObservers[0].target, fixture.player);
+  assert.equal(overlay.style.fontSize, "18px");
+
+  fixture.player.rect = { left: 0, top: 0, right: 2314, bottom: 866, width: 2314, height: 866 };
+  resizeObservers[0].callback([]);
+  frames.splice(0).forEach((frame) => frame());
+
+  assert.equal(overlay.style.fontSize, "31px");
+  assert.equal(findYouTubeControl(fixture.document, "youtube-transcript-toggle").style.right, "18px");
+});
+
+test("caption size setting shows on YouTube watch pages and saves with site settings", async () => {
+  const fixture = createYouTubeWatchFixture({ currentTime: 1 });
+  const sentMessages = [];
+  const api = await loadYouTubeCaptionApi(fixture, {
+    sendMessage(message) {
+      sentMessages.push(message);
+    }
+  });
+
+  api.showFloatingTranslateButton({ qualityMode: "free", displayMode: "bilingual", paidProvider: "gemini", captionSize: "large" });
+  const field = findYouTubeControl(fixture.document, "caption-size-field");
+  const select = findYouTubeControl(fixture.document, "caption-size");
+
+  assert.equal(field.style.display, "grid");
+  assert.equal(select.value, "large");
+
+  select.value = "xlarge";
+  select.dispatchEvent("change");
+
+  assert.equal(sentMessages.find((message) => message.type === "PBT_SET_SITE_TRANSLATION_SETTINGS").captionSize, "xlarge");
+});
+
+test("caption size setting stays hidden outside YouTube watch pages", async () => {
+  const document = createDocument();
+  const api = await loadContentApi(document, {
+    location: { href: "https://example.com/article" }
+  });
+
+  api.showFloatingTranslateButton({ qualityMode: "free", displayMode: "bilingual", paidProvider: "gemini" });
+
+  assert.equal(findYouTubeControl(document, "caption-size-field").style.display, "none");
+});
+
+test("youtube caption render reports unusable translations and keeps the English line", async () => {
+  const fixture = createYouTubeWatchFixture({ currentTime: 7 });
+  const api = await loadYouTubeCaptionApi(fixture, {
+    fetch: createYouTubeCaptionFetch({ en: manualCaptionFixturePayload() })
+  });
+  const collected = await api.collectYouTubeTranscriptSegmentsForTranslation({
+    doc: fixture.document,
+    allowYouTubeCaptionTrack: true
+  });
+  const rendered = api.renderYouTubeTranscriptTranslations({
+    translations: [{ id: collected.segments[1].id, text: "Then they finish." }]
+  });
+  const overlay = findYouTubeOverlay(fixture.document);
+
+  assert.equal(rendered.ok, true);
+  assert.equal(rendered.renderedCount, 0);
+  assert.equal(rendered.diagnostics.status, "no_usable_translations");
+  assert.equal(rendered.diagnostics.unmeaningfulTranslationCount, 1);
+  assert.equal(overlay.textContent, "Then they finish.");
+  assert.equal(overlay.getAttribute("data-pbt-sync-status"), "source_only");
+});
+
+test("youtube transcript floating button clears the English preview when translation fails", async () => {
+  const fixture = createYouTubeWatchFixture({ currentTime: 3 });
+  let api = null;
+  let previewText = "";
+
+  api = await loadYouTubeCaptionApi(fixture, {
+    fetch: createYouTubeCaptionFetch({ en: manualCaptionFixturePayload() }),
+    sendMessage(message, callback) {
+      if (message.type !== "PBT_TRANSLATE_YOUTUBE_TRANSCRIPT") {
+        callback({ ok: true });
+        return;
+      }
+
+      void api.collectYouTubeTranscriptSegmentsForTranslation({
+        doc: fixture.document,
+        requestId: message.requestId,
+        allowYouTubeCaptionTrack: message.allowYouTubeCaptionTrack,
+        allowYouTubePlayerCaptionToggle: message.allowYouTubePlayerCaptionToggle
+      }).then(() => {
+        previewText = findYouTubeOverlay(fixture.document)?.textContent ?? "";
+        callback({
+          ok: false,
+          error: { code: "youtube_transcript_no_usable_translations", message: "No usable translations." }
+        });
+      });
+    }
+  });
+
+  api.showFloatingTranslateButton({ qualityMode: "free", displayMode: "bilingual", paidProvider: "gemini" });
+  const button = findYouTubeControl(fixture.document, "youtube-transcript-toggle");
+
+  button.click();
+  await flushYouTubeTasks();
+
+  assert.equal(previewText, "Now, when a normal student writes a paper, they spread the work out.");
+  assert.equal(findYouTubeOverlay(fixture.document), null);
+  assert.equal(findYouTubeControl(fixture.document, "youtube-native-caption-style"), null);
+  assert.equal(button.getAttribute("data-pbt-active"), "false");
+  assert.match(findYouTubeControl(fixture.document, "youtube-transcript-hint").textContent, /没有返回可显示的中文字幕/);
+});
+
+test("youtube transcript click while a background refresh is in flight turns captions off", async () => {
+  const sentMessages = [];
+  const fixture = createYouTubeWatchFixture({ currentTime: 100 });
+  const api = await loadYouTubeCaptionApi(fixture, {
+    fetch: createYouTubeCaptionFetch({ en: spacedCaptionFixturePayload(40) }),
+    sendMessage(message, callback) {
+      sentMessages.push(message);
+
+      if (message.type !== "PBT_TRANSLATE_YOUTUBE_TRANSCRIPT") {
+        callback({ ok: true });
+      }
+    }
+  });
+
+  api.showFloatingTranslateButton({ qualityMode: "free", displayMode: "bilingual", paidProvider: "gemini" });
+  const button = findYouTubeControl(fixture.document, "youtube-transcript-toggle");
+  const collected = await api.collectYouTubeTranscriptSegmentsForTranslation({
+    doc: fixture.document,
+    allowYouTubeCaptionTrack: true
+  });
+
+  api.renderYouTubeTranscriptTranslations({ translations: spacedCaptionFixtureTranslations(collected.segments) });
+  fixture.video.currentTime = 140;
+  fixture.video.dispatchEvent("timeupdate");
+  const translateMessages = () => sentMessages.filter((message) => message.type === "PBT_TRANSLATE_YOUTUBE_TRANSCRIPT");
+
+  assert.equal(translateMessages().length, 1);
+  assert.equal(button.hasAttribute("data-pbt-loading"), false);
+
+  button.click();
+
+  assert.equal(findYouTubeOverlay(fixture.document), null);
+  assert.equal(button.getAttribute("data-pbt-active"), "false");
+  assert.equal(translateMessages().length, 1);
+});
+
 async function loadContentApi(document, options = {}) {
   const code = await readFile(new URL("../src/content/content-script.js", import.meta.url), "utf8");
   const mutationObservers = [];
@@ -3269,9 +5358,50 @@ async function loadContentApi(document, options = {}) {
     sandbox.requestAnimationFrame = options.requestAnimationFrame;
   }
 
+  if (options.fetch) {
+    sandbox.fetch = options.fetch;
+  }
+
+  if (options.performanceEntries) {
+    sandbox.performance = {
+      getEntriesByType(type) {
+        return type === "resource" ? options.performanceEntries.slice() : [];
+      }
+    };
+  }
+
+  const performanceObservers = [];
+
+  if (options.performanceObserver) {
+    sandbox.PerformanceObserver = class FakePerformanceObserver {
+      constructor(callback) {
+        this.callback = callback;
+        this.disconnected = false;
+        performanceObservers.push(this);
+      }
+
+      observe(observerOptions) {
+        this.observerOptions = observerOptions;
+      }
+
+      disconnect() {
+        this.disconnected = true;
+      }
+
+      emit(entries) {
+        this.callback({ getEntries: () => entries });
+      }
+    };
+  }
+
+  if (options.beforeRun) {
+    options.beforeRun(sandbox);
+  }
+
   sandbox.globalThis = sandbox;
   vm.runInNewContext(code, sandbox, { filename: "content-script.js" });
   sandbox.PrivateBilingualTranslatorContent.__mutationObservers = mutationObservers;
+  sandbox.PrivateBilingualTranslatorContent.__performanceObservers = performanceObservers;
   return sandbox.PrivateBilingualTranslatorContent;
 }
 
@@ -3372,6 +5502,154 @@ function el(document, tagName, text, attrs = {}) {
   return element;
 }
 
+function youtubeOverlayText(translatedText, sourceText) {
+  return sourceText ? `${translatedText}\n${sourceText}` : translatedText;
+}
+
+function createYouTubeWatchFixture(options = {}) {
+  const document = createDocument();
+  const player = el(document, "div", "", {
+    id: "movie_player",
+    class: options.playerClass ?? "html5-video-player"
+  });
+  const video = el(document, "video", "", { class: "html5-main-video" });
+  let captionButton = null;
+
+  player.rect = { left: 100, top: 50, right: 900, bottom: 550, width: 800, height: 500 };
+  video.currentTime = options.currentTime ?? 0;
+  video.duration = options.duration ?? 600;
+  player.appendChild(video);
+
+  if (options.captionButton !== false) {
+    captionButton = el(document, "button", "", {
+      class: "ytp-subtitles-button ytp-button",
+      "aria-label": "Subtitles/closed captions (c)",
+      "aria-pressed": "false",
+      ...(options.captionButtonAttributes ?? {})
+    });
+    player.appendChild(captionButton);
+  }
+
+  document.body.appendChild(player);
+  return { document, player, video, captionButton };
+}
+
+function loadYouTubeCaptionApi(fixture, options = {}) {
+  return loadContentApi(fixture.document, {
+    location: { href: "https://www.youtube.com/watch?v=test-video" },
+    performanceEntries: [{ name: youtubeTimedTextRequestUrl() }],
+    ...options
+  });
+}
+
+function youtubeTimedTextRequestUrl(params = {}) {
+  const url = new URL("https://www.youtube.com/api/timedtext");
+  url.searchParams.set("v", params.v ?? "test-video");
+  url.searchParams.set("caps", "asr");
+  url.searchParams.set("lang", params.lang ?? "en");
+
+  if (params.kind) {
+    url.searchParams.set("kind", params.kind);
+  }
+
+  if (params.tlang) {
+    url.searchParams.set("tlang", params.tlang);
+  }
+
+  url.searchParams.set("pot", params.pot ?? "player-pot-token");
+  url.searchParams.set("c", "WEB");
+  return url.toString();
+}
+
+function createYouTubeCaptionFetch(tracks, fetched = []) {
+  return async (url, options) => {
+    const requestUrl = new URL(String(url));
+    const key = [requestUrl.searchParams.get("lang"), requestUrl.searchParams.get("kind")].filter(Boolean).join("|");
+    const payload = tracks[key];
+
+    fetched.push({ url: requestUrl, options, key });
+    return {
+      ok: true,
+      async text() {
+        return payload ? JSON.stringify(payload) : "";
+      }
+    };
+  };
+}
+
+function manualCaptionPayload(lines) {
+  return {
+    events: lines.map(([startMs, durationMs, text]) => ({
+      tStartMs: startMs,
+      dDurationMs: durationMs,
+      segs: [{ utf8: text }]
+    }))
+  };
+}
+
+function manualCaptionFixturePayload() {
+  return manualCaptionPayload([
+    [0, 2000, "Now, when a normal student"],
+    [2000, 2000, "writes a paper,"],
+    [4000, 2500, "they spread the work out."],
+    [6500, 2000, "Then they finish."],
+    [12000, 3000, "Much later line."]
+  ]);
+}
+
+function manualCaptionFixtureTranslations(segments) {
+  const translatedBySource = {
+    "Now, when a normal student writes a paper, they spread the work out.": "现在，普通学生写论文时会把工作分散开。",
+    "Then they finish.": "然后他们就写完了。",
+    "Much later line.": "很久之后的一句。"
+  };
+
+  return Array.from(segments, (segment) => ({ id: segment.id, text: translatedBySource[segment.text] }));
+}
+
+function spacedCaptionFixturePayload(count) {
+  return manualCaptionPayload(Array.from({ length: count }, (_, index) => [index * 10000, 3000, `Sentence number ${index}.`]));
+}
+
+function spacedCaptionFixtureTranslations(segments) {
+  return Array.from(segments, (segment) => ({
+    id: segment.id,
+    text: segment.text.replace(/^Sentence number (\d+)\.$/, "第 $1 句。")
+  }));
+}
+
+function asrCaptionFixturePayload() {
+  return {
+    events: [
+      { tStartMs: 0, dDurationMs: 9000, wWinId: 1 },
+      {
+        tStartMs: 1000,
+        dDurationMs: 3000,
+        wWinId: 1,
+        segs: [{ utf8: "so" }, { utf8: " today", tOffsetMs: 300 }, { utf8: " we", tOffsetMs: 700 }, { utf8: " talk", tOffsetMs: 1000 }]
+      },
+      { tStartMs: 2400, dDurationMs: 2000, wWinId: 1, aAppend: 1, segs: [{ utf8: "\n" }] },
+      { tStartMs: 2400, dDurationMs: 3000, wWinId: 1, segs: [{ utf8: "about" }, { utf8: " captions", tOffsetMs: 300 }] },
+      { tStartMs: 5200, dDurationMs: 3000, wWinId: 1, segs: [{ utf8: "[Music]" }] },
+      { tStartMs: 7000, dDurationMs: 3000, wWinId: 1, segs: [{ utf8: "next" }, { utf8: " part", tOffsetMs: 400 }] }
+    ]
+  };
+}
+
+function findYouTubeOverlay(document) {
+  return findYouTubeControl(document, "youtube-transcript-overlay");
+}
+
+function findYouTubeControl(document, control) {
+  return findNode(document.body, (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === control);
+}
+
+function flushYouTubeTasks() {
+  return new Promise((resolve) => {
+    setImmediate(resolve);
+  });
+}
+
 class FakeNode {
   constructor(document, nodeType) {
     this.ownerDocument = document;
@@ -3434,6 +5712,7 @@ class FakeElement extends FakeNode {
     this.isContentEditable = false;
     this.disabled = false;
     this.listeners = new Map();
+    this.rect = { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 };
   }
 
   appendChild(node) {
@@ -3489,15 +5768,21 @@ class FakeElement extends FakeNode {
     this.listeners.set(name, listeners);
   }
 
-  dispatchEvent(name) {
-    for (const callback of this.listeners.get(name) ?? []) {
-      callback();
+  dispatchEvent(event) {
+    const eventObject = typeof event === "string"
+      ? { type: event, target: this }
+      : { ...event, target: event?.target ?? this };
+
+    for (const callback of this.listeners.get(eventObject.type) ?? []) {
+      callback(eventObject);
     }
   }
 
-  click() {
+  click(event = {}) {
+    const eventObject = { type: "click", target: this, ...event };
+
     for (const callback of this.listeners.get("click") ?? []) {
-      callback();
+      callback(eventObject);
     }
   }
 
@@ -3509,6 +5794,10 @@ class FakeElement extends FakeNode {
     }
 
     return findNode(this, (node) => node.nodeType === 1 && node.getAttribute("data-pbt-control") === match[1]);
+  }
+
+  getBoundingClientRect() {
+    return this.rect;
   }
 
   contains(node) {

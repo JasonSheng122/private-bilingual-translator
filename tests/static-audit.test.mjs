@@ -20,7 +20,9 @@ test("network APIs are restricted to approved provider modules", async () => {
         file.path.endsWith("src/providers/google-free-provider.mjs") ||
           file.path.endsWith("src/providers/gemini-provider.mjs") ||
           file.path.endsWith("src/providers/custom-gemini-provider.mjs") ||
-          file.path.endsWith("src/providers/custom-openai-provider.mjs"),
+          file.path.endsWith("src/providers/custom-openai-provider.mjs") ||
+          file.path.endsWith("src/background/local-whisper-asr.mjs") ||
+          file.path.endsWith("src/content/content-script.js"),
         true
       );
     }
@@ -33,6 +35,8 @@ test("source only declares approved provider network destinations", async () => 
 
   assert.deepEqual([...new Set(urls)].sort(), [
     "http://*/*",
+    "http://127.0.0.1:8765/*",
+    "http://127.0.0.1:8765/transcribe",
     "https://*/*",
     "https://generativelanguage.googleapis.com",
     "https://generativelanguage.googleapis.com/*",
@@ -62,7 +66,25 @@ test("source does not use forbidden Chrome permissions or unsafe storage", async
     if (/\bscripting\b/.test(file.text)) {
       assert.equal(
         file.path.endsWith("manifest.json") ||
+          file.path.endsWith("src/background/background.js") ||
+          file.path.endsWith("src/offscreen/local-asr.js"),
+        true
+      );
+    }
+
+    if (/\btabCapture\b/.test(file.text)) {
+      assert.equal(
+        file.path.endsWith("manifest.json") ||
           file.path.endsWith("src/background/background.js"),
+        true
+      );
+    }
+
+    if (/\boffscreen\b/.test(file.text)) {
+      assert.equal(
+        file.path.endsWith("manifest.json") ||
+          file.path.endsWith("src/background/background.js") ||
+          file.path.endsWith("src/offscreen/local-asr.js"),
         true
       );
     }
@@ -125,6 +147,51 @@ test("content script avoids unicode property regex for browser load compatibilit
   const contentScript = await readFile(new URL("../src/content/content-script.js", import.meta.url), "utf8");
 
   assert.doesNotMatch(contentScript, /\\p\{/);
+});
+
+test("youtube transcript support only allows the approved caption track endpoint path", async () => {
+  const files = await readSourceAndManifestFiles();
+  const text = files.map((file) => file.text).join("\n");
+
+  assert.doesNotMatch(text, /\bdesktopCapture\b/);
+  assert.doesNotMatch(text, /\baudioCapture\b/);
+  assert.doesNotMatch(text, /\byoutubei\b/i);
+  assert.doesNotMatch(text, /\bYouTube Data API\b/i);
+
+  for (const file of files) {
+    if (/\btimedtext\b/i.test(file.text) || /\bcaptionTracks\b/i.test(file.text)) {
+      assert.equal(file.path.endsWith("src/content/content-script.js"), true);
+    }
+
+    if (
+      /\bytp-caption\b/i.test(file.text) ||
+      /\bcaption-window\b/i.test(file.text) ||
+      /\bytp-subtitles-button\b/i.test(file.text)
+    ) {
+      assert.equal(file.path.endsWith("src/content/content-script.js"), true);
+    }
+
+    if (/\btabCapture\b/.test(file.text)) {
+      assert.equal(
+        file.path.endsWith("manifest.json") ||
+          file.path.endsWith("src/background/background.js"),
+        true
+      );
+    }
+  }
+});
+
+test("youtube caption sync reads player caption requests only from the content script", async () => {
+  const files = await readSourceAndManifestFiles();
+  const text = files.map((file) => file.text).join("\n");
+
+  assert.doesNotMatch(text, /["']world["']\s*:\s*["']MAIN["']/);
+
+  for (const file of files) {
+    if (/\bPerformanceObserver\b/.test(file.text) || /\bgetEntriesByType\b/.test(file.text)) {
+      assert.equal(file.path.endsWith("src/content/content-script.js"), true);
+    }
+  }
 });
 
 async function readSourceAndManifest() {

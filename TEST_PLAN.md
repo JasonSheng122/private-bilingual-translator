@@ -6,6 +6,15 @@
 
 测试分四层。
 
+## 真实页面回归附加规则
+
+1. 用户报告真实 Chrome 页面 bug 时，必须先用一句话固定 original failure shape。
+2. 自动化测试只能证明某条代码路径，不替代更新后代码上的同形态真实 Chrome 复测。
+3. 只有更新后代码在同一路径、同类页面、同一用户可见 failure shape 上复测通过，或用户明确确认复测通过，才允许写“已解决”“搞定”。
+4. 连续两次修复仍拿不到同形态证据时，下一步必须转为补净化诊断、只读采样或向用户索取证据，不能继续堆第三个猜测补丁。
+5. 如果用户已提供明确复现页、复现 URL 或可稳定复现的页面入口，真实 Chrome 回归的第一目标必须是该同一页面；不能先在另一个“看起来差不多”的页面通过后，就回写为用户问题已解决。
+6. YouTube transcript / overlay / `幕` 相关问题，如果当前线程已有用户指定的基准 watch 页面，每次相关改动后的第一条 Chrome 回归都必须在该线程指定页面上完成，并至少记录：`幕` 是否抖动、是否进入翻译流程、底部 overlay 是否出现、overlay 与声音是否一致、`data-pbt-sync-playback` 是否落在当前句起止之间、问题是否仍复现。
+
 ## 第一层：单元测试
 
 必须覆盖：
@@ -18,6 +27,7 @@
 6. renderer 防重复。
 7. cost_estimator。
 8. cache_manager。
+9. YouTube 字幕轨道读取、断句与 overlay 同步。
 
 ## domain_policy 测试
 
@@ -129,6 +139,37 @@
 10. SVG/diagram 内的文本不进入 collect，也不能插入双语译文节点。
 11. 页面右侧设置从双语翻译切到直接翻译时，如果页面已翻译，必须自动先移除旧双语译文，再按直接翻译重新渲染。
 
+## YouTube 字幕翻译测试
+
+YouTube 字幕翻译必须测试：
+
+1. 只在 `youtube.com/watch` 普通视频页启用 `幕` 字幕入口，入口定位到视频右下角，不放在普通右侧翻译 rail 中。
+2. collect 只在 `allowYouTubeCaptionTrack: true` 时运行，否则返回 `caption_track_not_allowed`；非 watch 页返回 `unsupported_page`；两者都不请求字幕。
+3. 字幕请求地址只取自资源计时条目：必须是 HTTPS `youtube.com` `/api/timedtext`、带 `pot`、`v` 等于当前视频；其他视频或不带 `pot` 的条目被忽略。
+4. 请求当前视频英文轨道时保留 `pot`，只改 `lang` / `kind`，删除 `tlang`，设置 `fmt=json3`，使用 `credentials: "omit"`。
+5. 页面 `ytInitialPlayerResponse` 属于其他视频时不得使用其轨道列表；属于当前视频时优先人工英文轨道；列表中没有英文轨道时返回 `caption_track_not_english`，不点击 CC、不请求字幕。
+6. 人工英文轨道为空时回退到自动字幕轨道；请求异常返回 `caption_track_fetch_failed`。
+7. 没有观察到请求时，用户点击路径点击 CC 一次，经 `PerformanceObserver` 拿到请求后再点击恢复；CC 按钮缺失或禁用返回 `caption_track_missing`，点击后仍无请求返回 `caption_track_token_missing`，广告中返回 `caption_track_ad_showing`；CC 标签为“无法显示字幕”但按钮未禁用时仍要点击并等待请求；页面轨道列表已有英文轨道时，CC 缺失或禁用返回 `caption_track_token_missing`。
+8. 自动字幕断句必须保留每个事件的首词（没有 `tOffsetMs`），忽略 `\n` 追加事件，括号提示单独成句；没有逐词时间的自动字幕按整行分组并标记为 `asr_lines`；人工字幕连续行合并到句末标点。
+9. overlay 只按主 video `currentTime` 显示 `start ≤ t < end` 的句子：边界两侧切换正确，句间空隙隐藏；页面存在预览 video、过期的 `.ytp-time-current` 或 player `getCurrentTime()` 时不受影响。
+10. 视频播放时 overlay 通过 `requestAnimationFrame` 逐帧前进；暂停后停止请求新帧。
+11. 广告 class 出现时隐藏，消失后恢复；watch 页 videoId 变化时清理 overlay 和原生字幕隐藏样式，旧视频 render 被拒绝。
+12. collect 只返回当前时间前 5 秒到后 90 秒内未收到结果的句子；全部已处理时返回 `ready_cached`；字幕轨道每个视频只请求一次。
+13. seek 后晚到的同一视频译文照常落地；其他 videoId 的 render 被拒绝。
+14. 已翻译状态下，未来 60 秒内出现未翻译句子时只发送一次静默刷新（携带 `allowYouTubeCaptionTrack`，不携带 `allowYouTubePlayerCaptionToggle`，`confirmCost: true`）。
+15. 译文与原文相同等不可用结果返回 `renderedCount=0` 和净化诊断，overlay 保持英文原文。
+16. `幕` 失败时清理英文预览和原生字幕隐藏样式并显示中文提示；加载中再次点击取消请求、清理预览、拒绝晚到 render；静默刷新进行中点击 `幕` 直接关闭字幕。
+17. overlay 和按钮只写 `data-pbt-sync-*` 净化诊断；明确清理时移除按钮诊断属性。
+18. 插件自身节点（overlay、样式、按钮）的 DOM 变化不触发按钮位置重算；外部节点变化才触发。
+19. 本机 Whisper ASR 可选 fallback：普通点击 `幕` 不发送 `allowYouTubeLocalWhisperAsr`，只有 `Alt/Option` + `幕` 发送；background 只在字幕轨道不可用状态下启动；静音、暂停预检和各类净化状态必须覆盖；local ASR render/status 使用独立 session id 判断 stale。
+20. content script 版本化 bootstrap 必须覆盖：旧 `PrivateBilingualTranslatorContent` runtime object 和旧 `data-pbt-control="youtube-transcript-toggle"` 按钮会被替换，新按钮带当前 `data-pbt-runtime-version`。
+21. overlay 跟随显示模式；直接翻译只显示中文，译文未返回时显示英文；切回双语后立即显示“中文 + 下一行英文”。
+22. 切换显示模式不发送翻译请求，collect 返回 `ready_cached`；切换翻译质量或供应商后立即发送一次携带新 `qualityMode` 的静默刷新，新译文返回前保留旧译文。
+23. 后台静默刷新返回 `missing_api_key` 时显示中文 Key 提示并保留旧译文；点击 `幕` 遇到 `provider_http_error` 401 时提示检查 Key。
+24. overlay 和 `幕` 按钮挂在播放器内部；overlay 字号随播放器高度缩放（500px → 18px，1080px → 39px，180px 取下限 16px），字幕大小“大”乘 1.2；英文行 0.75em；控制条显示时底部 82px / 高度 10%，`ytp-autohide` 时 5%。
+25. `幕` 按钮的 click / dblclick 调用 `stopPropagation`，不把事件交给播放器；按钮以 `right` / `bottom` 贴在播放器右下角；播放器尺寸变化（`ResizeObserver`）时即使视频暂停也重算 overlay 字号。
+26. 设置面板的“YouTube 字幕大小”只在 YouTube watch 页显示，修改后随 `SET_SITE_TRANSLATION_SETTINGS` 保存；站点设置按 origin 保存字幕大小，popup 保存其他偏好时保留原值，非法值被忽略；GET_PAGE_STATUS 返回并转发字幕大小。
+
 ## provider 测试
 
 必须测试：
@@ -206,10 +247,19 @@
 25. content script 在虚拟滚动重新挂载同一条已翻译正文，或页面框架移除双语译文 marker 时，应复用当前页面会话内译文，不重复发送 `PBT_TRANSLATE_PAGE`，不显示原文旁 spinner。
 26. content script 在 `restorePage`、`prepareTranslation` 或显式移除双语译文后，应暂停当前页面会话译文复用，直到下一次成功渲染新译文。
 27. background 收到 content script 增量 collect 返回 `cachedRenderedCount` 且无新 segments 时，应返回已翻译状态，不调用 provider，不发送 render 消息。
-28. content script 遇到 extension context invalidated 时，如果当前旧脚本仍有直接翻译快照，应先恢复已渲染文本并清理 `data-pbt-replaced`，再移除旧右侧 UI；如果只剩 orphan marker，应走 reload 兜底。
+28. content script 遇到 extension context invalidated 时，应先标记 runtime 已失效；如果当前旧脚本仍有直接翻译快照，应先恢复已渲染文本并清理 `data-pbt-replaced`，再移除旧右侧 UI；如果只剩 orphan marker，应走 reload 兜底；后续清理 UI 不得再因为 `chrome.runtime.getURL()`、`connect()` 或其他 runtime API 失效而二次抛错。
 29. content script 收到 `chrome.runtime.lastError` 这类 runtime message failure 时，必须向手动翻译和自动增量翻译调用方返回净化失败响应，使 in-flight 状态、主按钮 loading 和原文旁 pending spinner 都能清理。
 30. content script 不应把已可见元素的纯视觉 `class` / `style` 变化当作新增正文补翻；`hidden`、`aria-*`、`data-state`、`open`、以及从 hidden/inactive/collapsed/closed class 或 `display:none` / `visibility:hidden` style 变为可见的 reveal 变化仍应触发补翻。
 31. content script 自动增量翻译不应处理 secondary rail：右侧推荐、趋势、直播、相关内容等侧栏新增内容不发送 `PBT_TRANSLATE_PAGE`，不显示 pending spinner；mutation cache reuse 也不应在该区域自动补回译文；主正文流和普通文档 TOC 侧栏仍可补翻。
+32. YouTube 字幕翻译请求必须是字幕专用显式请求，不复用页面正文 collect 语义，也不影响直接翻译/双语翻译。
+33. content script 只能把句子文本和句子 id 发送给 background，不能发送 API Key、完整视频 URL、字幕请求地址或时间轴。
+34. background 只为同 tab content script 来源转发 `allowYouTubeCaptionTrack`、`allowYouTubePlayerCaptionToggle`、`allowYouTubeLocalWhisperAsr`；popup/后台发起的请求不转发；旧字段 `allowYouTubeVisibleCaptionLayer`、长视频 auto-open 和 preserve 字段一律忽略。
+35. background 收到 `caption_track_*`、`caption_request_cancelled` 或本机 ASR 预检状态时，不调用 provider，并映射为净化错误码。
+36. background 的 render 消息只携带 `requestId`、`videoId` 和译文，不再携带窗口字段。
+37. 字幕翻译关闭、切换视频、runtime message failure、后台无响应 timeout 或加载中再次点击后，旧 render 不得落地。
+38. 静态审计必须确认没有新增音频捕获权限、MAIN world 脚本、`webRequest`、未批准的 YouTube 抓取 endpoint、analytics 或 telemetry；`PerformanceObserver` / `getEntriesByType` 只出现在 content script。
+39. YouTube overlay render 失败必须覆盖净化 diagnostics、background 错误码映射和用户可见中文提示。
+40. `幕` 请求 in-flight 时，页面大量 mutation 不应触发普通网页正文自动增量重扫。
 
 ## 第三层：手动浏览器测试
 
@@ -271,7 +321,7 @@
 28. 确认按钮文字居中，按钮不会明显遮挡正文。
 29. 在 `chrome://extensions` reload 插件，确认没有 `An unknown error occurred when fetching the script.`。
 30. 如果 popup 提示 `Reload this page and try again.`，刷新目标网页后再点击翻译。
-30. 不刷新目标网页时点击 reload 前残留的旧右侧按钮，确认不再新增 `Extension context invalidated` 错误。
+30. 不刷新目标网页时点击 reload 前残留的旧右侧按钮或 YouTube `幕` 按钮，确认不再新增未捕获的 `Extension context invalidated` 错误；即使 `sendMessage` 失败后 `chrome.runtime.getURL()` 也失效，旧 UI 清理路径也必须安静退出。
 31. 刷新目标网页后确认新右侧按钮重新显示，并可正常翻译。
 32. 使用自然版/深度版但未保存自定义 provider Key 或 Key 被拒绝时，确认右侧按钮显示 `!`，hover 能看到净化后的错误原因。
 33. 使用深度版时，如果 provider 返回等于原文的内容，popup 或右侧按钮不显示 `Translated n item(s).` 假成功。
@@ -296,6 +346,19 @@
 50. 在 Twitter/X、Reddit 等页面滚动触发自动增量翻译时，如扩展后台响应端口失败或页面刷新导致 runtime message failure，确认原文旁 spinner 会消失，不会长期停在右侧栏或正文旁。
 51. 在 Twitter/X、Reddit 等页面排查“循环控件闪烁”时，不能只凭截图或单次 DOM snapshot 判断；必须在滚动、悬停和等待过程中采样 `[data-pbt-control="translation-pending"]` 与 `[data-pbt-control="translation-pending-spinner"]` 数量，确认是否是插件节点反复创建/删除，并同时检查附近网站原生直播、头像、加载或动画控件是否没有 `data-pbt-control` 标记。
 52. 在 Twitter/X 右侧栏出现直播卡、推荐卡、趋势卡或相关内容卡片时，确认这些 secondary rail 内容不会因自动增量或会话缓存复用被翻译；同一页面主时间线或评论新增正文仍应正常自动补翻。
+53. 在 `youtube.com/watch` 打开有英文字幕的视频（先用一个有人工英文字幕的视频，再用一个只有自动字幕的视频），CC 保持关闭，点击 `幕`：确认 CC 按钮闪一下后恢复关闭，底部先出现英文，随后出现中文。
+54. 播放中对照声音：每句中文出现与说话开始基本同步；控制条自动隐藏后不应慢半拍；读取 overlay 的 `data-pbt-sync-playback`、`data-pbt-sync-cue`、`data-pbt-sync-cue-end`，播放时间应始终落在当前句起止之间。
+55. 拖动进度条到前后不同位置、暂停再播放、调整播放速度，确认字幕立即跟随，不出现几秒前的旧句。
+56. 站内点击相关视频切换到另一个视频，确认旧字幕立即消失；再点 `幕` 读取的是新视频字幕。
+57. 片头广告期间点击 `幕` 显示广告提示；已开启的字幕在广告中隐藏，广告结束后恢复。
+58. 播放器 CC 本来就开着时点击 `幕`，确认播放器自带字幕被隐藏，关闭 `幕` 后恢复显示。
+59. 中文界面下（播放器默认显示中文字幕）点击 `幕`，确认读取的仍是英文轨道。
+60. 打开没有英文字幕的视频，确认显示净化提示且不发送 provider 请求；按住 `Alt/Option` 点击 `幕` 才进入本机 Whisper。
+61. runtime failure、后台长时间无响应或加载中再次点击时，确认 `幕` 不会无限转圈，英文预览被清理。
+62. 确认 Network 面板只出现用户选择的 provider 请求、播放器自身的字幕请求和扩展对当前视频同源 `/api/timedtext` 的英文轨道请求，没有扩展发起的 `tlang` 自动翻译请求。
+63. 本机 Whisper 真实 Chrome 验收：点击 `幕` 前记录视频是否 paused/muted；读取按钮、hint、overlay 的 `data-pbt-local-asr-*` 诊断；记录首次字幕延迟和后续刷新体感（目标约 2-5 秒，一定晚于声音）。
+64. 在 DevTools Application 面板确认没有保存字幕原文、译文正文、时间轴、字幕请求地址、完整视频 URL 或 provider 原始响应。
+65. 确认 content script 仍不能读取 API Key，错误和日志不包含 API Key 或字幕正文。
 
 敏感页面测试：
 

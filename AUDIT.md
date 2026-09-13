@@ -45,6 +45,9 @@
 9. downloads。
 10. proxy。
 11. unlimitedStorage。
+12. tabCapture，除可选的本机 Whisper 捕获当前 tab 音频短块外。
+13. desktopCapture。
+14. audioCapture。
 
 通过条件：
 
@@ -69,7 +72,7 @@
 
 规则：
 
-1. fetch 只能出现在 provider 模块或批准的网络工具模块。
+1. fetch 只能出现在 provider 模块、批准的网络工具模块、明确批准的 `src/content/content-script.js` YouTube 字幕轨道请求，或明确批准的 `src/background/local-whisper-asr.mjs` 本机 Whisper 请求模块。
 2. 第一版禁止 WebSocket。
 3. 第一版禁止 EventSource。
 4. 禁止 sendBeacon。
@@ -124,6 +127,25 @@
 4. 译文正文默认不能记录到日志。
 5. 错误信息不能包含原文。
 6. 缓存 key 不能明文暴露完整原文。
+
+## 诊断信息审计
+
+异步 UI、render 失败、provider 输出门槛和第三方 DOM adapter 允许返回净化诊断，但只能包含：
+
+1. 错误码。
+2. 状态。
+3. 数量。
+4. 布尔值。
+5. 步骤名。
+
+禁止包含：
+
+1. 网页原文。
+2. 译文正文。
+3. 完整 URL。
+4. API Key。
+5. provider 原始响应。
+6. 完整字幕时间轴。
 
 ## DOM 审计
 
@@ -223,6 +245,32 @@
 23. 排查等待控件闪烁或残留时，必须用 `data-pbt-control="translation-pending"` / `translation-pending-spinner` 确认插件节点归属；对间歇闪烁必须采样一段滚动、悬停或等待窗口，不能用单帧无残留关闭问题。
 24. `class` / `style` 属性变化只有在确实像隐藏内容变可见时才能触发自动补翻；纯视觉动画、脉冲、高亮或布局刷新不能反复创建 pending spinner。
 25. 自动增量翻译必须跳过右侧推荐、趋势、直播、相关内容等 secondary rail，不得因这些区域滚动刷新或缓存复用发送 provider 请求或创建 pending spinner；主正文流和普通文档 TOC 侧栏仍应保留补翻能力。
+26. YouTube 字幕翻译只处理用户点击 `幕` 后的字幕专用来源：只允许读取当前视频播放器已发出的 `/api/timedtext` 请求地址（`PerformanceObserver` / `performance.getEntriesByType("resource")`，只读地址），再请求同源英文 JSON3 轨道；不得读取 transcript 面板、播放器可见 CC 文本、控制条时间、播放器字幕/自动翻译菜单，不得注入 MAIN world 脚本、拦截页面 `fetch` / XHR、使用 `webRequest`、请求 `tlang` 自动翻译、YouTube Data API、`youtubei` 或第三方字幕服务；本机 Whisper 只作为用户按住 `Alt/Option` 点击 `幕` 且没有可读英文字幕轨道时的可选 fallback。字幕请求地址、字幕原文、译文、时间轴、音频块和完整视频 URL 不得持久化保存。
+27. YouTube `幕` 按钮的 runtime message failure、后台无响应 timeout 和加载中再次点击必须清理本地 loading 和英文预览；过期 request id 或其他 videoId 的 render 不得落地；后台静默刷新进行中时点击 `幕` 必须直接关闭字幕；失败态必须显示净化后的可见中文提示，不能只显示 `!`。
+28. overlay 只能以主 video 的 `currentTime` 为时钟，按句子 `start ≤ t < end` 显示；不得使用 offset 校准、控制条时间、player 方法时间或 URL 起播时间；广告（`ad-showing` / `ad-interrupting`）期间隐藏；videoId 变化时清理。
+29. 只允许同 tab content script 的用户点击路径（`allowYouTubePlayerCaptionToggle: true`）在没有观察到当前视频字幕请求时点击播放器现有 CC 按钮一次，并在 CC 由扩展打开时再点击一次恢复；CC 已打开但没有请求时只允许关、开各一次；广告播放中不点击；popup、后台和静默刷新不得触发。
+30. 字幕请求只能在 `youtube.com/watch` 页面、同 tab content script 显式携带 `allowYouTubeCaptionTrack: true` 时发生；URL 必须为 HTTPS、`youtube.com`、`/api/timedtext` 或 `/timedtext` 路径、带 `pot` 且 `v` 等于当前视频；只修改 `lang` / `kind` / `fmt` 并删除 `tlang`；fetch 使用 `credentials: "omit"`；页面 `ytInitialPlayerResponse` 轨道列表只在 videoId 等于当前视频时使用。
+31. YouTube overlay render 如果返回 `renderedCount=0`，必须同时返回净化诊断原因；诊断和 `data-pbt-sync-*` 只能包含来源、字幕类型、状态、时间、句子起止和数量，不得包含字幕原文、译文正文、字幕请求地址、完整视频 URL、完整时间轴、API Key 或 provider 原始响应。
+32. YouTube overlay 可以在中文字幕下方显示英文原文，并在译文返回前只显示英文原文；原文只存在当前页面 overlay DOM 和内存中，不得写入 diagnostics、storage、日志、错误或远程请求。
+33. 本机 Whisper ASR 只能在 `youtube.com/watch` 页面、同 tab content script 的 `Alt/Option` + `幕` 用户点击路径显式携带 `allowYouTubeLocalWhisperAsr: true` 且 collect 返回 `caption_track_missing`、`caption_track_not_english`、`caption_track_token_missing`、`caption_track_fetch_failed` 或 `caption_track_no_segments` 时启动；普通 `幕` 点击、静默刷新、popup、后台或未显式 true 的路径不得启动。Chrome 因 `activeTab` / extension invocation 限制拒绝指定 tab capture 时，只能 fallback 一次当前活动 tab stream；若两次 stream 尝试都失败，只能返回净化 `youtube_local_asr_capture_denied`，不得创建 offscreen、调用本机 endpoint、调用 provider 或记录 Chrome 原始错误文本，也不得提示用户先点击浏览器工具栏扩展图标。`tabCapture` / `offscreen` 只允许出现在 manifest 和 `src/background/background.js`，音频 chunk 只接受扩展 offscreen document sender，background 启动 offscreen 时传入 `chunkMs: 3000`，offscreen 保持 3000ms 下限；网络只允许 `src/background/local-whisper-asr.mjs` POST 到 `http://127.0.0.1:8765/transcribe`；本机 ASR 启动后必须通过净化状态回传 processing / no-audio-chunk / chunk failure，同一 session 处理中的后续 chunk 不得排队堆积，且不得保存音频、ASR 原文、译文、完整 URL 或时间轴。`data-pbt-local-asr-*` 诊断只允许包含状态、错误码、active 布尔值、request id 和视频 paused/muted 布尔值。
+34. overlay 只把站点显示模式用于 overlay 文本：双语为“中文 + 下一行英文”，直接翻译只显示中文，译文未返回时显示英文。字幕译文缓存按“provider 签名 + 句子 id”记录，签名只含翻译质量和付费供应商，切换显示模式不得触发 provider 请求；切换 provider 后新译文返回前保留旧译文。YouTube 字幕翻译不得接收单次使用 Key，content script 仍不得接触 API Key、Base URL 或 model；`missing_api_key`、`missing_custom_provider_config`、`provider_http_error` 的中文提示只能由错误码和 HTTP 状态码生成，不得显示 provider 原始响应文本；后台静默刷新遇到这些错误时同一错误和 provider 签名只提示一次。
+35. overlay、`幕` 按钮和提示只能以带 `data-pbt-control` 的插件节点挂入播放器 `#movie_player`（找不到播放器时退回 body 并保持隐藏），不得修改或移动播放器已有节点；overlay 必须 `pointer-events: none`；按钮必须阻止 click / dblclick / mousedown / mouseup / pointerdown / pointerup 冒泡到播放器。字幕大小只允许保存 `small` / `standard` / `large` / `xlarge`，非法值被忽略。
+
+## YouTube 字幕专项审计
+
+YouTube 字幕相关任务必须额外确认：
+
+1. manifest 的 `tabCapture` / `offscreen` 只服务可选的本机 Whisper；manifest 没有新增 `desktopCapture`、`audioCapture`、`debugger`、`webRequest`、`history`、`cookies`、MAIN world content script 或默认 YouTube host permission。
+2. `timedtext`、`captionTracks`、`PerformanceObserver`、`getEntriesByType`、`ytp-caption`、`ytp-subtitles-button` 只出现在 `src/content/content-script.js` 的受控字幕路径中；`src` 中没有 `youtubei`、YouTube Data API、第三方字幕服务、analytics、telemetry 或开发者服务器请求。
+3. content script 不读取 API Key、Base URL、model 或 storage。
+4. 字幕请求地址（含 `pot`）、字幕原文、译文正文、时间轴和完整视频 URL 不写入 `chrome.storage.local`、`chrome.storage.session`、日志、错误、diagnostics 或测试快照。
+5. 没有英文字幕、广告中、没有观察到字幕请求或字幕请求失败时，不发送 provider 请求。
+6. 真实 Chrome Network 面板中，只允许用户选择的 provider endpoint、播放器自身的字幕请求和扩展对当前视频同源 `/api/timedtext` 的英文轨道请求；不得出现扩展发起的 `tlang` 自动翻译请求、`youtubei`、YouTube Data API、第三方字幕服务或其他视频的字幕请求。
+7. `幕` 按钮不会因 runtime failure、后台无响应或再次点击无限转圈；取消或 timeout 后的旧请求 render 会被拒绝，英文预览被清理；各类失败有可见中文提示。
+8. 关闭字幕、失败或切换视频时，overlay、原生字幕隐藏样式、句子和译文缓存同时清理；扩展打开的 CC 在读取后已恢复关闭。
+9. 真实 Chrome 验证状态必须在 Closeout 单独标记；没有执行 Chrome 验证时，自动测试通过不能写成完整验收 Passed。
+10. 真实页面同步问题必须先读取 overlay / `幕` 按钮的 `data-pbt-sync-*` 诊断（播放时间与当前句起止），不能仅凭自动测试关闭问题。
+11. 必须确认 `tabCapture` / `offscreen` 只出现在 manifest 和 `src/background/background.js`，本机 Whisper endpoint 只出现在 `manifest.json`、`src/background/local-whisper-asr.mjs` 和本地 helper 文档/脚本中；`data-pbt-local-asr-*` 不得包含音频、字幕正文、译文正文、完整 URL、完整时间轴、API Key 或 provider 响应。
 
 ## 审计报告格式
 

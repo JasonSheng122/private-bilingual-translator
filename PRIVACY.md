@@ -11,6 +11,7 @@ Private Bilingual Translator 是一个本地运行的 Chrome 扩展。项目目�
 1. 用户点击翻译。
 2. 用户已经为当前 origin 主动开启自动翻译。
 3. 已翻译页面出现新的可见内容，需要增量翻译。
+4. 用户在 `youtube.com/watch` 页面点击 `幕`，触发字幕专用翻译。
 
 扩展默认跳过：
 
@@ -29,6 +30,10 @@ Private Bilingual Translator 是一个本地运行的 Chrome 扩展。项目目�
 
 翻译时，扩展会把当前需要翻译的文本片段发送给用户选择的翻译 provider。
 
+YouTube `幕` 实验中，只有同 tab content script 的用户点击或其后同页面静默刷新显式放行时，扩展才会读取当前视频播放器已经发出的字幕请求地址（通过浏览器资源计时接口，只读取地址，不读取响应），再用这个地址请求当前视频的英文字幕轨道，并只把当前时间附近尚未翻译的句子发送给用户选择的 provider。如果播放器还没请求过字幕，普通点击 `幕` 会点击一次播放器现有 CC 按钮让 YouTube 自己请求，读取后再关回去；扩展不会读取字幕/自动翻译菜单或选择语言。字幕请求地址（含播放器令牌）、句子、译文缓存和同步诊断只存在当前页面内存或当前页面诊断属性中，不写入 `chrome.storage`、日志或错误；同步诊断只包含来源、状态、时间和数量，不包含字幕正文或译文正文。字幕请求只发往当前视频的同源 YouTube timed text 地址，使用 `credentials: "omit"`，不携带扩展 API Key。
+
+本机 Whisper fallback 只在用户按住 `Alt/Option` 点击 `幕`，且当前视频没有可读的英文字幕轨道时启动。普通 `幕` 点击不会捕获音频。它捕获当前 YouTube tab 的短音频块，只发送到用户本机 `http://127.0.0.1:8765/transcribe`，不发送到云端 ASR，不进入 content script，不写入 storage、日志或错误。本机 helper 会临时写入音频文件并在请求结束后删除；helper 不开放 `Access-Control-Allow-Origin`，普通网页不能通过浏览器 CORS 直接读取该本机服务响应。
+
 当前支持或计划支持的 provider 类型包括：
 
 1. 免费 Google 翻译风格 adapter。
@@ -43,7 +48,7 @@ Private Bilingual Translator 是一个本地运行的 Chrome 扩展。项目目�
 扩展可以保存：
 
 1. 用户选择的翻译质量模式。
-2. 用户选择的显示模式。
+2. 用户选择的显示模式和 YouTube 字幕大小。
 3. 用户选择的付费 provider id。
 4. 用户主动开启的 origin 级自动翻译设置。
 5. 用户选择保存的 API Key。
@@ -55,7 +60,7 @@ API Key 保存规则：
 3. 本地保存：只有用户明确选择时，才写入 `chrome.storage.local`。
 4. 不使用 `chrome.storage.sync` 保存 API Key。
 
-扩展不会持久化保存网页原文、译文正文、完整 HTML、provider 请求体或 provider 响应体。
+扩展不会持久化保存网页原文、译文正文、完整 HTML、完整 YouTube 字幕文件、完整字幕时间轴、音频块、ASR 原文、provider 请求体或 provider 响应体。
 
 ## 当前页面内存状态
 

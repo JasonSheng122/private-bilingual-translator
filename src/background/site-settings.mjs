@@ -1,7 +1,9 @@
 import {
+  CAPTION_SIZES,
   DISPLAY_MODES,
   PAID_PROVIDERS,
   QUALITY_MODES,
+  normalizeCaptionSize,
   normalizeDisplayMode,
   normalizePaidProvider,
   normalizeQualityMode
@@ -42,6 +44,7 @@ export async function getStoredTranslationSettingsForUrl(url, storageArea = getD
     displayMode: normalizeStoredDisplayMode(settings.displayModesByOrigin[siteKey]) ?? settings.defaultDisplayMode,
     qualityMode: normalizeStoredQualityMode(settings.qualityModesByOrigin[siteKey]) ?? settings.defaultQualityMode,
     paidProvider: normalizeStoredPaidProvider(settings.paidProvidersByOrigin[siteKey]) ?? settings.defaultPaidProvider,
+    captionSize: normalizeStoredCaptionSize(settings.captionSizesByOrigin[siteKey]) ?? settings.defaultCaptionSize,
     autoTranslate: settings.autoTranslateByOrigin[siteKey] === true
   };
 }
@@ -103,7 +106,8 @@ export async function saveTranslationSettingsForUrl({
   displayMode,
   qualityMode,
   paidProvider,
-  autoTranslate
+  autoTranslate,
+  captionSize
 }, storageArea = getDefaultStorageArea()) {
   const siteKey = getSiteSettingsKey(url);
 
@@ -150,11 +154,20 @@ export async function saveTranslationSettingsForUrl({
     },
     autoTranslateByOrigin: {
       ...settings.autoTranslateByOrigin
+    },
+    captionSizesByOrigin: {
+      ...settings.captionSizesByOrigin
     }
   };
+  const normalizedCaptionSize = normalizeStoredCaptionSize(captionSize);
 
   if (typeof autoTranslate === "boolean") {
     nextSettings.autoTranslateByOrigin[siteKey] = autoTranslate;
+  }
+
+  if (normalizedCaptionSize) {
+    nextSettings.defaultCaptionSize = normalizedCaptionSize;
+    nextSettings.captionSizesByOrigin[siteKey] = normalizedCaptionSize;
   }
 
   await writeSiteSettings(storageArea, nextSettings);
@@ -165,7 +178,8 @@ export async function saveTranslationSettingsForUrl({
     displayMode: nextSettings.displayModesByOrigin[siteKey],
     qualityMode: nextSettings.qualityModesByOrigin[siteKey],
     paidProvider: nextSettings.paidProvidersByOrigin[siteKey],
-    autoTranslate: nextSettings.autoTranslateByOrigin[siteKey] === true
+    autoTranslate: nextSettings.autoTranslateByOrigin[siteKey] === true,
+    captionSize: normalizeCaptionSize(nextSettings.captionSizesByOrigin[siteKey] ?? nextSettings.defaultCaptionSize)
   };
 }
 
@@ -208,9 +222,11 @@ async function readSiteSettings(storageArea) {
     qualityModesByOrigin: normalizeMap(settings.qualityModesByOrigin, normalizeStoredQualityMode),
     paidProvidersByOrigin: normalizeMap(settings.paidProvidersByOrigin, normalizeStoredPaidProvider),
     autoTranslateByOrigin: normalizeBooleanMap(settings.autoTranslateByOrigin),
+    captionSizesByOrigin: normalizeMap(settings.captionSizesByOrigin, normalizeStoredCaptionSize),
     defaultDisplayMode: normalizeStoredDisplayMode(settings.defaultDisplayMode),
     defaultQualityMode: normalizeStoredQualityMode(settings.defaultQualityMode),
     defaultPaidProvider: normalizeStoredPaidProvider(settings.defaultPaidProvider),
+    defaultCaptionSize: normalizeStoredCaptionSize(settings.defaultCaptionSize),
     floatingControlsHidden: settings.floatingControlsHidden === true
   };
 }
@@ -253,9 +269,11 @@ function createEmptySettings() {
     qualityModesByOrigin: {},
     paidProvidersByOrigin: {},
     autoTranslateByOrigin: {},
+    captionSizesByOrigin: {},
     defaultDisplayMode: null,
     defaultQualityMode: null,
     defaultPaidProvider: null,
+    defaultCaptionSize: null,
     floatingControlsHidden: false
   };
 }
@@ -296,4 +314,8 @@ function normalizeStoredPaidProvider(value) {
     value === PAID_PROVIDERS.CUSTOM_GEMINI
     ? value
     : null;
+}
+
+function normalizeStoredCaptionSize(value) {
+  return Object.values(CAPTION_SIZES).includes(value) ? value : null;
 }
