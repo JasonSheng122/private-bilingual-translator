@@ -6,7 +6,9 @@
 
 ## Unreleased
 
-暂无。
+### Changed
+
+- LICENSE 版权署名改为 `JasonSheng122 and contributors`；README 新增官方发布渠道说明，提醒用户只从 GitHub Releases（以及以后公布的商店链接）安装。
 
 ## 0.2.0 - 2026-09-13
 

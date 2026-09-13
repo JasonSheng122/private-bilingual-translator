@@ -56,6 +56,12 @@
 
 更新版本时，下载新的 zip 替换原文件夹，再到 `chrome://extensions` 点击扩展卡片上的“重新加载”，并刷新已经打开的页面。开发者模式加载的扩展不会自动更新。
 
+## 官方发布渠道
+
+本项目由 [JasonSheng122](https://github.com/JasonSheng122) 维护。唯一官方发布渠道是本仓库的 [GitHub Releases](https://github.com/JasonSheng122/private-bilingual-translator/releases)；如果以后上架 Chrome Web Store，商店链接也只会在本 README 和 Releases 中公布。
+
+其他来源的安装包或商店条目都不是官方版本，可能被修改过（例如加入广告、收集数据或窃取 API Key）。安装前请确认来源。发现冒充本项目的版本，欢迎通过 [Issues](https://github.com/JasonSheng122/private-bilingual-translator/issues) 告知。
+
 ## 隐私和安全边界
 
 翻译时，扩展只会把当前需要翻译的可见文本片段发送给用户选择的 provider。它不会把网页原文、译文正文、完整 HTML、provider 请求体或 provider 响应体写入持久化存储。
